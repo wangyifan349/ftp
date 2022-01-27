@@ -7,9 +7,7 @@ from pyftpdlib.handlers import TLS_FTPHandler
 def main():
     authorizer = DummyAuthorizer()
     authorizer.add_user('wangyifan', 'helloUSA', '..', perm='elradfmwMT')
-    authorizer.add_user('tuboshu', 'tuboshu123', '..', perm='elradfmwMT')
-    authorizer.add_user('SSC', 'helloSSC', '..', perm='elradfmwMT')
-    authorizer.add_anonymous('.')
+    #authorizer.add_anonymous('.')
     handler = TLS_FTPHandler
     handler.certfile = 'server.crt'
     handler.keyfile = 'server.key'
