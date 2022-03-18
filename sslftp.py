@@ -17,7 +17,7 @@ def main():
     handler.tls_data_required = True
     handler.masquerade_address = '185.161.70.200'
     handler.passive_ports = range(1000,2500)
-    server = FTPServer(('0.0.0.0', 21), handler)
+    server = FTPServer(('0.0.0.0', 2121), handler)
     server.serve_forever()
 
 if __name__ == '__main__':
