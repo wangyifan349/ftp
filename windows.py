@@ -12,9 +12,9 @@ def main():
     handler.keyfile = 'server.key'
     handler.authorizer = authorizer
     #requires SSL for both control and data channel
-    #handler.tls_control_required = True
-    #handler.tls_data_required = True
-    handler.masquerade_address = '185.161.70.200'
+    handler.tls_control_required = False
+    handler.tls_data_required = False
+    #handler.masquerade_address = '185.161.70.200'
     handler.passive_ports = range(3000,4000)
     server = FTPServer(('0.0.0.0', 21), handler)
     server.serve_forever()
