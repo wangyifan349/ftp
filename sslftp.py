@@ -4,7 +4,7 @@ from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import TLS_FTPHandler
 def main():
     authorizer = DummyAuthorizer()
-    authorizer.add_user('wangyifan', 'password', '..', perm='elradfmwMT')
+    authorizer.add_user('username', 'password', '..', perm='elradfmwMT')
     #authorizer.add_anonymous('.')
     handler = TLS_FTPHandler
     handler.certfile = '/usr/local/etc/xray/fullchain.pem'
