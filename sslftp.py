@@ -7,8 +7,8 @@ def main():
     authorizer.add_user('wangyifan', 'password', '..', perm='elradfmwMT')
     #authorizer.add_anonymous('.')
     handler = TLS_FTPHandler
-    handler.certfile = 'server.crt'
-    handler.keyfile = 'server.key'
+    handler.certfile = '/usr/local/etc/xray/fullchain.pem'
+    handler.keyfile = '/usr/local/etc/xray/privkey.pem'
     handler.authorizer = authorizer
     #requires SSL for both control and data channel
     handler.tls_control_required = True
