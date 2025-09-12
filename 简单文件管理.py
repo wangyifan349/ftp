@@ -13,17 +13,15 @@ from flask import (
 from werkzeug.utils import secure_filename
 # ---------- CONFIG ----------
 APP_SECRET = os.environ.get("APP_SECRET") or secrets.token_hex(32)
-DATABASE = os.environ.get("FILEMGR_DB") or "filemgr.db"
-ROOT_STORAGE = os.path.abspath(os.environ.get("FILEMGR_ROOT") or "storage_root")
-os.makedirs(ROOT_STORAGE, exist_ok=True)
-MAX_UPLOAD = 500 * 1024 * 1024  # 500 MB
-# Password hashing params
+DATABASE_PATH = os.environ.get("FILEMGR_DB") or "filemgr.db"
+STORAGE_ROOT = os.path.abspath(os.environ.get("FILEMGR_ROOT") or "storage_root")
+os.makedirs(STORAGE_ROOT, exist_ok=True)
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
 PWD_SALT_BYTES = 16
-# ---------- FLASK APP ----------
+# Flask app
 app = Flask(__name__)
 app.secret_key = APP_SECRET
-app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD
-
+app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_BYTES
 # ---------- HTML (embedded, Bootstrap) ----------
 INDEX_HTML = """
 <!doctype html>
@@ -49,12 +47,12 @@ INDEX_HTML = """
     <div class="d-flex justify-content-between align-items-center mb-3">
       <h3>文件管理器</h3>
       <div>
-        {% if user %}
-          <span class="me-2">已登录: <strong>{{ user }}</strong></span>
-          <a href="/logout" class="btn btn-sm btn-outline-secondary">登出</a>
+        {% if current_user %}
+          <span class="me-2">已登录: <strong>{{ current_user }}</strong></span>
+          <a href="{{ url_for('logout') }}" class="btn btn-sm btn-outline-secondary">登出</a>
         {% else %}
-          <a href="/login" class="btn btn-sm btn-primary">登录</a>
-          <a href="/register" class="btn btn-sm btn-outline-primary">注册</a>
+          <a href="{{ url_for('login') }}" class="btn btn-sm btn-primary">登录</a>
+          <a href="{{ url_for('register') }}" class="btn btn-sm btn-outline-primary">注册</a>
         {% endif %}
       </div>
     </div>
@@ -112,7 +110,7 @@ const api = {
 };
 
 let currentPath = "";
-let currentUser = {{ 'null' if not user else ('"'+user+'"' ) }};
+let currentUser = {{ 'null' if not current_user else ('"'+current_user+'"' ) }};
 
 function log(msg, type='info'){
   const el = document.getElementById('log');
@@ -144,7 +142,6 @@ function renderList(items){
   controlsRow.innerHTML = `<div class="small-muted">操作：右侧按钮 | 拖拽移动到目录 | 选中后可分享</div>`;
   container.appendChild(controlsRow);
 
-  // 上一级
   const upRow = document.createElement('div');
   upRow.className = 'item-row';
   upRow.innerHTML = `<div class="text-muted">.. (上一级)</div>`;
@@ -338,13 +335,12 @@ setCurrentPath("");
 def get_db():
     db = getattr(g, "_database", None)
     if db is None:
-        db = g._database = sqlite3.connect(DATABASE, check_same_thread=False)
+        db = g._database = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
         db.row_factory = sqlite3.Row
     return db
 def init_db():
     db = get_db()
     cur = db.cursor()
-    # users: id, username(unique), password_hash (salt$hash), created_at
     cur.executescript("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -364,10 +360,11 @@ def init_db():
     """)
     db.commit()
 @app.teardown_appcontext
-def close_connection(exception):
+def close_db_connection(exception):
     db = getattr(g, "_database", None)
     if db is not None:
         db.close()
+        g._database = None
 # ---------- Auth Helpers ----------
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(PWD_SALT_BYTES)
@@ -381,7 +378,7 @@ def verify_password(stored: str, password: str) -> bool:
         return hmac.compare_digest(digest.hex(), digest_hex)
     except Exception:
         return False
-def current_user():
+def get_current_user():
     uid = session.get("user_id")
     if not uid:
         return None
@@ -394,15 +391,28 @@ def require_login():
         abort(401)
 # ---------- File helpers ----------
 def safe_join(root: str, *paths: str) -> str:
+    """
+    Resolve target path under root and ensure it does not escape root.
+    Accept empty paths.
+    """
     root_p = Path(root).resolve()
-    target = root_p.joinpath(*paths).resolve()
+    # filter out empty strings and normalize parts
+    parts = [p for p in paths if p not in (None, "", ".")]
+    if parts:
+        target = root_p.joinpath(*parts).resolve()
+    else:
+        target = root_p
     try:
         target.relative_to(root_p)
     except Exception:
         raise ValueError("Attempt to access outside storage root")
     return str(target)
+def normalize_rel_path(rel: str) -> str:
+    """Normalize a relative path string: strip whitespace and both leading/trailing slashes."""
+    return rel.strip().strip("/")
 def list_directory(rel_path=""):
-    target = safe_join(ROOT_STORAGE, rel_path) if rel_path else str(Path(ROOT_STORAGE))
+    rel = normalize_rel_path(rel_path)
+    target = safe_join(STORAGE_ROOT, rel) if rel else safe_join(STORAGE_ROOT)
     if not os.path.exists(target):
         raise FileNotFoundError
     if not os.path.isdir(target):
@@ -413,7 +423,7 @@ def list_directory(rel_path=""):
             items.append({
                 "name": entry.name,
                 "is_dir": entry.is_dir(),
-                "path": os.path.join(rel_path, entry.name).replace("\\", "/") if rel_path else entry.name.replace("\\", "/"),
+                "path": os.path.join(rel, entry.name).replace("\\", "/") if rel else entry.name.replace("\\", "/"),
                 "size": entry.stat().st_size if entry.is_file() else None
             })
     items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
@@ -438,10 +448,11 @@ def register():
     if not username or not password:
         return "用户名与密码必填", 400
     db = get_db()
-    cur = db.cursor()
     try:
-        cur.execute("INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-                    (username, hash_password(password), datetime.utcnow().isoformat()))
+        db.execute(
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+            (username, hash_password(password), datetime.utcnow().isoformat())
+        )
         db.commit()
     except sqlite3.IntegrityError:
         return "用户名已存在", 400
@@ -473,16 +484,16 @@ def login():
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect("/")
+    return redirect(url_for("index"))
 # ---------- ROUTES: UI ----------
 @app.route("/")
 def index():
-    user = current_user()
-    return render_template_string(INDEX_HTML, user=user)
+    user = get_current_user()
+    return render_template_string(INDEX_HTML, current_user=user)
 # ---------- ROUTES: API (file ops) ----------
 @app.route("/api/list")
 def api_list():
-    rel = request.args.get("path", "").strip().strip("/")
+    rel = normalize_rel_path(request.args.get("path", ""))
     try:
         items = list_directory(rel)
     except FileNotFoundError:
@@ -496,26 +507,27 @@ def api_list():
 def api_mkdir():
     require_login()
     data = request.get_json() or {}
-    rel = (data.get("path") or "").strip().strip("/")
+    rel = normalize_rel_path(data.get("path") or "")
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"error": "name 必须提供"}), 400
     name = secure_filename(name)
     try:
-        target = safe_join(ROOT_STORAGE, rel, name) if rel else safe_join(ROOT_STORAGE, name)
+        target = safe_join(STORAGE_ROOT, rel, name) if rel else safe_join(STORAGE_ROOT, name)
     except ValueError:
         return jsonify({"error": "非法路径"}), 400
     try:
         os.makedirs(target, exist_ok=False)
     except FileExistsError:
         return jsonify({"error": "目录已存在"}), 400
-    return jsonify({"ok": True, "path": os.path.join(rel, name).replace("\\", "/")})
+    rel_created = os.path.join(rel, name).replace("\\", "/") if rel else name.replace("\\", "/")
+    return jsonify({"ok": True, "path": rel_created})
 @app.route("/api/upload", methods=["POST"])
 def api_upload():
     require_login()
-    rel = (request.form.get("path") or "").strip().strip("/")
+    rel = normalize_rel_path(request.form.get("path") or "")
     try:
-        dest = safe_join(ROOT_STORAGE, rel) if rel else safe_join(ROOT_STORAGE)
+        dest = safe_join(STORAGE_ROOT, rel) if rel else safe_join(STORAGE_ROOT)
     except ValueError:
         return jsonify({"error": "非法路径"}), 400
     if not os.path.isdir(dest):
@@ -525,19 +537,23 @@ def api_upload():
     files = request.files.getlist("file")
     saved = []
     for f in files:
-        filename = secure_filename(f.filename)
+        filename = secure_filename(f.filename or "")
         if not filename:
             continue
-        out = os.path.join(dest, filename)
-        # 若文件存在则添加 suffix 避免覆盖
-        if os.path.exists(out):
+        out_path = os.path.join(dest, filename)
+        if os.path.exists(out_path):
             base, ext = os.path.splitext(filename)
             i = 1
-            while os.path.exists(os.path.join(dest, f"{base}({i}){ext}")):
+            candidate = os.path.join(dest, f"{base}({i}){ext}")
+            while os.path.exists(candidate):
                 i += 1
+                candidate = os.path.join(dest, f"{base}({i}){ext}")
             filename = f"{base}({i}){ext}"
-            out = os.path.join(dest, filename)
-        f.save(out)
+            out_path = os.path.join(dest, filename)
+        try:
+            f.save(out_path)
+        except Exception as e:
+            return jsonify({"error": f"保存文件失败: {str(e)}"}), 500
         saved.append(os.path.join(rel, filename).replace("\\", "/") if rel else filename.replace("\\", "/"))
     return jsonify({"ok": True, "saved": saved})
 @app.route("/api/download")
@@ -546,7 +562,7 @@ def api_download():
     if not rel:
         return jsonify({"error": "path 必须提供"}), 400
     try:
-        target = safe_join(ROOT_STORAGE, rel)
+        target = safe_join(STORAGE_ROOT, rel)
     except ValueError:
         return jsonify({"error": "非法路径"}), 400
     if not os.path.exists(target) or not os.path.isfile(target):
@@ -560,7 +576,7 @@ def api_delete():
     if not rel:
         return jsonify({"error": "path 必须提供"}), 400
     try:
-        target = safe_join(ROOT_STORAGE, rel)
+        target = safe_join(STORAGE_ROOT, rel)
     except ValueError:
         return jsonify({"error": "非法路径"}), 400
     if not os.path.exists(target):
@@ -578,12 +594,12 @@ def api_move():
     require_login()
     data = request.get_json() or {}
     src = (data.get("src") or "").lstrip("/")
-    dest_dir = (data.get("dest_dir") or "").strip().strip("/")
+    dest_dir = normalize_rel_path(data.get("dest_dir") or "")
     if not src:
         return jsonify({"error": "src 必须提供"}), 400
     try:
-        abs_src = safe_join(ROOT_STORAGE, src)
-        abs_dest_dir = safe_join(ROOT_STORAGE, dest_dir) if dest_dir else safe_join(ROOT_STORAGE)
+        abs_src = safe_join(STORAGE_ROOT, src)
+        abs_dest_dir = safe_join(STORAGE_ROOT, dest_dir) if dest_dir else safe_join(STORAGE_ROOT)
     except ValueError:
         return jsonify({"error": "非法路径"}), 400
     if not os.path.exists(abs_src):
@@ -609,9 +625,8 @@ def api_share_create():
     name = (data.get("name") or "").strip()
     if not path:
         return jsonify({"error": "path 必须提供"}), 400
-    # path must exist
     try:
-        p_abs = safe_join(ROOT_STORAGE, path)
+        p_abs = safe_join(STORAGE_ROOT, path)
     except ValueError:
         return jsonify({"error": "非法路径"}), 400
     if not os.path.exists(p_abs):
@@ -619,8 +634,10 @@ def api_share_create():
     token = secrets.token_urlsafe(16)
     uid = session.get("user_id")
     db = get_db()
-    db.execute("INSERT INTO shares (token, user_id, path, name, created_at) VALUES (?, ?, ?, ?, ?)",
-               (token, uid, path, name, datetime.utcnow().isoformat()))
+    db.execute(
+        "INSERT INTO shares (token, user_id, path, name, created_at) VALUES (?, ?, ?, ?, ?)",
+        (token, uid, path, name, datetime.utcnow().isoformat())
+    )
     db.commit()
     return jsonify({"ok": True, "token": token})
 @app.route("/api/share/list")
@@ -652,7 +669,7 @@ def api_share_delete():
 @app.route("/api/share/public/list")
 def api_share_public_list():
     token = (request.args.get("token") or "").strip()
-    rel = (request.args.get("path") or "").strip().strip("/")
+    rel = normalize_rel_path(request.args.get("path") or "")
     if not token:
         return jsonify({"error": "token 必须提供"}), 400
     db = get_db()
@@ -660,8 +677,7 @@ def api_share_public_list():
     r = cur.fetchone()
     if not r:
         return jsonify({"error": "分享不存在"}), 404
-    base = r["path"]
-    # compute effective path
+    base = r["path"].strip().strip("/")
     full_rel = (base + ("/" + rel if rel else "")).strip("/")
     try:
         items = list_directory(full_rel)
@@ -683,22 +699,21 @@ def api_share_public_download():
     r = cur.fetchone()
     if not r:
         return jsonify({"error": "分享不存在"}), 404
-    base = r["path"]
+    base = r["path"].strip().strip("/")
     full_rel = (base + "/" + rel).strip("/")
     try:
-        target = safe_join(ROOT_STORAGE, full_rel)
+        target = safe_join(STORAGE_ROOT, full_rel)
     except ValueError:
         return jsonify({"error": "非法路径"}), 400
     if not os.path.exists(target) or not os.path.isfile(target):
         return jsonify({"error": "文件不存在"}), 404
     return send_file(target, as_attachment=True)
-# Friendly public route for sharing links
 @app.route("/s/<token>")
 def public_share_page(token):
-    # simple redirect to main page with token filled
+    # redirect to main page with share token in query string
     return redirect("/?share=" + token)
 # ---------- BOOTSTRAP: ensure DB init ----------
-with app.app_context():
+    with app.app_context():
     init_db()
 # ---------- RUN ----------
 if __name__ == "__main__":
