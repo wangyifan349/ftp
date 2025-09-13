@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# app.py - corrected full application with share browse page
 import os
 import sqlite3
 import time
@@ -7,7 +9,7 @@ from pathlib import Path
 from functools import wraps
 from flask import (
     Flask, request, redirect, url_for, render_template_string, session,
-    send_file, jsonify
+    send_file, jsonify, abort
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -19,6 +21,7 @@ ALLOWED_EXT = None            # e.g. {'.png', '.jpg'}
 MAX_FILE_SIZE = 200 * 1024 * 1024
 SECRET_KEY = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
 os.makedirs(USER_FILES_DIR, exist_ok=True)
+
 # ---- Flask app ----
 app = Flask(__name__, static_folder=str(BASE_DIR))
 app.secret_key = SECRET_KEY
@@ -99,6 +102,7 @@ TPL_LOGIN = """
 </body>
 </html>
 """
+
 TPL_INDEX = """
 <!doctype html>
 <html>
@@ -180,6 +184,7 @@ TPL_INDEX = """
     async function listDir(){
       const res = await fetch('/api/list?path=' + encodeURIComponent(curPath));
       const j = await res.json();
+      if (j.error){ alert(j.error); return; }
       document.getElementById('cur-path').innerText = '/' + (curPath || '');
       const cont = document.getElementById('file-list');
       cont.innerHTML = '';
@@ -462,6 +467,63 @@ TPL_SHARES = """
 </body>
 </html>
 """
+
+# Public share browse template (read-only)
+TPL_SHARE_BROWSE = """
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shared: {{ shared_path }}</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+  body{ background:#f5fbf6; font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding:20px; }
+  .card{ max-width:900px; margin:0 auto; background:#fff; border-radius:10px; padding:20px; box-shadow:0 8px 30px rgba(0,0,0,0.06); }
+  .item{ display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #f0f0f0; align-items:center; }
+  .name{ font-weight:600; }
+  .muted{ color:#6c757d; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <div>
+        <div style="font-weight:700;color:#2f9e44">公开分享</div>
+        <div class="muted">{{ shared_path or '/' }}</div>
+      </div>
+      <div>
+        <a href="/" class="btn btn-sm btn-outline-secondary">返回</a>
+      </div>
+    </div>
+
+    {% if items %}
+      {% for it in items %}
+        <div class="item">
+          <div>
+            <div class="name">
+              {% if it.is_dir %}
+                📁 <a href="{{ url_for('share_serve', token=token) }}?sub={{ it.name|urlencode }}">{{ it.name }}</a>
+              {% else %}
+                📄 {{ it.name }}
+              {% endif %}
+            </div>
+            <div class="muted" style="font-size:0.9rem;">{{ it.size }} {{ it.mime or '' }}</div>
+          </div>
+          <div>
+            {% if not it.is_dir %}
+              <a class="btn btn-sm btn-primary" href="{{ url_for('share_download', token=token) }}?path={{ (shared_path + '/' + it.name).lstrip('/')|urlencode }}">下载</a>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">此目录为空或不可访问。</div>
+    {% endif %}
+  </div>
+</body>
+</html>
+"""
 # ---- Database init & helpers ----
 def init_db():
     """Create DB and tables if not exist."""
@@ -517,7 +579,6 @@ def login_required(f):
             return redirect(url_for("login"))
         return f(*a, **kw)
     return deco
-
 def current_user_dir():
     """Return Path to current user's file storage directory (create if missing)."""
     uid = session.get("user_id")
@@ -537,10 +598,27 @@ def safe_path_join(base: Path, rel_path: str) -> Path:
         raise ValueError("Path traversal")
     return joined
 def normalize_rel_path(p: str) -> str:
-    """Normalize a relative path to use forward slashes and remove '.' parts."""
-    if not p:
+    """Normalize a relative path: strip whitespace, collapse separators, remove '.' and '..' parts.
+    Returns '' for root. Raises ValueError for absolute paths or traversal attempts."""
+    if p is None:
         return ""
-    parts = [part for part in Path(p).parts if part not in ('.', '')]
+    p = str(p).strip()
+    if p == "":
+        return ""
+    # Reject absolute paths
+    if p.startswith("/") or p.startswith("\\"):
+        raise ValueError("absolute paths not allowed")
+    parts = []
+    for part in Path(p).parts:
+        if part in ('.', ''):
+            continue
+        if part == '..':
+            # prevent upward traversal escaping root
+            if not parts:
+                raise ValueError("path traversal")
+            parts.pop()
+            continue
+        parts.append(part)
     return "/".join(parts)
 # ---- Routes: auth & UI ----
 @app.route("/register", methods=["GET", "POST"])
@@ -565,6 +643,7 @@ def register():
     session["user_id"] = uid
     session["username"] = username
     return redirect(url_for("index"))
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET":
@@ -609,7 +688,6 @@ def shares():
             "created_at_human": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["created_at"]))
         })
     return render_template_string(TPL_SHARES, shares=shares)
-
 # ---- API Endpoints ----
 @app.route("/api/list", methods=["GET"])
 @login_required
@@ -619,7 +697,10 @@ def api_list():
     Only non-deleted items are returned.
     Query param: path (relative)
     """
-    rel = normalize_rel_path(request.args.get("path", ""))
+    try:
+        rel = normalize_rel_path(request.args.get("path", ""))
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
     uid = session["user_id"]
     with get_db() as conn:
         cur = conn.cursor()
@@ -629,6 +710,7 @@ def api_list():
     for r in rows:
         items.append({"name": r["display_name"], "is_dir": bool(r["is_dir"]), "size": r["size"], "mime": r["mime"]})
     return jsonify({"path": rel, "items": items})
+
 @app.route("/api/mkdir", methods=["POST"])
 @login_required
 def api_mkdir():
@@ -637,7 +719,10 @@ def api_mkdir():
     JSON: { path: "parent/dir", name: "newname" }
     """
     data = request.get_json() or {}
-    rel = normalize_rel_path(data.get("path", ""))
+    try:
+        rel = normalize_rel_path(data.get("path", ""))
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"error": "no name"}), 400
@@ -671,7 +756,10 @@ def api_upload():
       - path: destination path (relative)
       - files: file inputs (multiple)
     """
-    rel = normalize_rel_path(request.form.get("path", ""))
+    try:
+        rel = normalize_rel_path(request.form.get("path", ""))
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
     uid = session["user_id"]
     user_dir = current_user_dir()
     try:
@@ -726,7 +814,6 @@ def api_upload():
             saved.append(filename)
         conn.commit()
     return jsonify({"saved": saved, "errors": errors})
-
 @app.route("/api/download", methods=["GET"])
 @login_required
 def api_download():
@@ -734,7 +821,12 @@ def api_download():
     Download a file.
     Query param: path (relative to user root, e.g. "dir/file.txt" or "file.txt")
     """
-    relpath = normalize_rel_path(request.args.get("path", ""))
+    try:
+        relpath = normalize_rel_path(request.args.get("path", ""))
+    except ValueError:
+        return "invalid path", 400
+    if relpath == "":
+        return "not found", 404
     uid = session["user_id"]
     parent = str(Path(relpath).parent) if "/" in relpath else ""
     name = Path(relpath).name
@@ -758,7 +850,10 @@ def api_delete():
     Since recycle bin is removed, deletion is permanent.
     """
     data = request.get_json() or {}
-    rel = normalize_rel_path(data.get("path", ""))
+    try:
+        rel = normalize_rel_path(data.get("path", ""))
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
     if not rel: return jsonify({"error": "no path"}), 400
     uid = session["user_id"]
     parent = str(Path(rel).parent) if "/" in rel else ""
@@ -805,8 +900,11 @@ def api_move():
     dest can be an existing directory (move into) or a new path (rename/move).
     """
     data = request.get_json() or {}
-    src = normalize_rel_path(data.get("src", ""))
-    dest = normalize_rel_path(data.get("dest", ""))
+    try:
+        src = normalize_rel_path(data.get("src", ""))
+        dest = normalize_rel_path(data.get("dest", ""))
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
     if not src: return jsonify({"error": "no src"}), 400
     uid = session["user_id"]
     src_parent = str(Path(src).parent) if "/" in src else ""
@@ -907,7 +1005,10 @@ def api_meta():
     Return metadata for a single item.
     Query param: path (relative)
     """
-    rel = normalize_rel_path(request.args.get("path", ""))
+    try:
+        rel = normalize_rel_path(request.args.get("path", ""))
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
     if not rel: return jsonify({"error": "no path"}), 400
     uid = session["user_id"]
     parent = str(Path(rel).parent) if "/" in rel else ""
@@ -928,9 +1029,13 @@ def api_share():
     Returns: { ok: True, token: "..." }
     """
     data = request.get_json() or {}
-    rel = normalize_rel_path(data.get("path", ""))
-    if not rel:
-        return jsonify({"error": "no path"}), 400
+    try:
+        rel = normalize_rel_path(data.get("path", ""))
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
+    if rel == "":
+        # Prevent accidental sharing of whole user root (change if you want to allow)
+        return jsonify({"error": "cannot share root"}), 400
     uid = session["user_id"]
     parent = str(Path(rel).parent) if "/" in rel else ""
     name = Path(rel).name
@@ -961,7 +1066,10 @@ def api_unshare():
     JSON: { path: "relative/path/to/dir_or_name" }
     """
     data = request.get_json() or {}
-    rel = normalize_rel_path(data.get("path", ""))
+    try:
+        rel = normalize_rel_path(data.get("path", ""))
+    except ValueError:
+        return jsonify({"error": "invalid path"}), 400
     if not rel:
         return jsonify({"error": "no path"}), 400
     uid = session["user_id"]
@@ -977,10 +1085,21 @@ def api_unshare():
 def share_serve(token):
     """
     Publicly list contents of a shared directory (read-only).
-    Returns simple JSON list of items under the shared directory (non-recursive).
+    Renders an HTML page that lists direct children of the shared directory.
+    Optional query param: sub=child_dir_name to view a child directory (one level).
     """
     if not token:
         return "invalid", 400
+    sub = request.args.get("sub")
+    # 'sub' is the child directory name to browse into; normalize but do not allow traversal
+    if sub:
+        try:
+            sub = normalize_rel_path(sub)
+        except ValueError:
+            return "invalid sub", 400
+        # only allow single-name sub (no slashes) since UI only links single child directories
+        if "/" in sub:
+            return "invalid sub", 400
     with get_db() as conn:
         cur = conn.cursor()
         # Lookup share by token
@@ -989,14 +1108,59 @@ def share_serve(token):
         if not s:
             return "not found", 404
         uid = s["user_id"]
-        prefix = (s["path"] + "/" + s["display_name"]).lstrip('/')
-        # Select items directly under the shared prefix
+        base_prefix = (s["path"] + "/" + s["display_name"]).lstrip('/')
+        # Determine which path to query: either base_prefix (direct children) or base_prefix + '/' + sub
+        if sub:
+            prefix = (base_prefix + "/" + sub).lstrip('/')
+        else:
+            prefix = base_prefix
+        # Query only direct children whose path equals prefix
         cur.execute("SELECT display_name, path, size, mime, is_dir FROM files WHERE user_id=? AND path=? AND deleted=0 ORDER BY is_dir DESC, display_name COLLATE NOCASE", (uid, prefix))
         rows = cur.fetchall()
     items = []
     for r in rows:
         items.append({"name": r["display_name"], "is_dir": bool(r["is_dir"]), "size": r["size"], "mime": r["mime"]})
-    return jsonify({"shared_path": prefix, "items": items})
+    return render_template_string(TPL_SHARE_BROWSE, items=items, shared_path=prefix, token=token)
+@app.route("/s/<token>/download", methods=["GET"])
+def share_download(token):
+    """
+    Allow downloading a file inside a shared directory (read-only).
+    Query param: path=relative_path_from_user_root e.g. 'dir/file.txt' or 'dir/sub/file.txt'
+    Only files where their path lies directly under the shared prefix are allowed.
+    """
+    if not token:
+        return "invalid", 400
+    qpath = request.args.get("path", "")
+    try:
+        relpath = normalize_rel_path(qpath)
+    except ValueError:
+        return "invalid path", 400
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, path, display_name FROM shares WHERE token=?", (token,))
+        s = cur.fetchone()
+        if not s:
+            return "not found", 404
+        uid = s["user_id"]
+        prefix = (s["path"] + "/" + s["display_name"]).lstrip('/')
+        # Ensure the requested file is under prefix (either directly or deeper)
+        if not relpath.startswith(prefix):
+            return "forbidden", 403
+        # Compute parent/name relative to user's root
+        parent = str(Path(relpath).parent) if "/" in relpath else ""
+        name = Path(relpath).name
+        cur.execute("SELECT stored_name, display_name, is_dir FROM files WHERE user_id=? AND path=? AND display_name=? AND deleted=0", (uid, parent, name))
+        row = cur.fetchone()
+        if not row:
+            return "not found", 404
+        if row["is_dir"]:
+            return "is a directory", 400
+        stored = row["stored_name"]
+        user_dir = USER_FILES_DIR / str(uid)
+        file_fs = user_dir / parent / stored
+        if not file_fs.exists():
+            return "file missing", 500
+        return send_file(str(file_fs), as_attachment=True, download_name=row["display_name"])
 # ---- App entrypoint ----
 if __name__ == "__main__":
     init_db()
