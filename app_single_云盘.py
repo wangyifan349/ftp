@@ -1,87 +1,184 @@
-# app_single.py
 import os
 import sqlite3
 import time
 import uuid
 import shutil
 from pathlib import Path
+from functools import wraps
 from flask import (
     Flask, request, redirect, url_for, render_template_string, session,
     send_file, jsonify
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from functools import wraps
-# ---- Config ----
+# ---- Config (simple, tweak for production) ----
 BASE_DIR = Path(__file__).parent.resolve()
 USER_FILES_DIR = BASE_DIR / "user_files"
 DB_PATH = BASE_DIR / "app.db"
-ALLOWED_EXT = None
+ALLOWED_EXT = None            # e.g. {'.png', '.jpg'}
 MAX_FILE_SIZE = 200 * 1024 * 1024
 SECRET_KEY = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
 os.makedirs(USER_FILES_DIR, exist_ok=True)
+# ---- Flask app ----
 app = Flask(__name__, static_folder=str(BASE_DIR))
 app.secret_key = SECRET_KEY
 # ---- Templates (embedded) ----
 TPL_LOGIN = """
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>登录/注册</title></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ 'Register' if action=='register' else 'Login' }}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root{
+      --brand-500: #2f9e44;
+      --brand-600: #23863a;
+      --bg: #f5fbf6;
+    }
+    body{ background: var(--bg); font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial; }
+    .auth-card{ max-width:520px; margin:6vh auto; background:#fff; border-radius:12px; box-shadow:0 8px 30px rgba(0,0,0,0.06); padding:36px; }
+    .brand { color:var(--brand-600); font-weight:700; font-size:1.25rem; display:flex; gap:.6rem; align-items:center; }
+    .brand .logo { width:40px; height:40px; background:linear-gradient(135deg,var(--brand-500),var(--brand-600)); border-radius:8px; display:inline-block; }
+    .muted { color:#6c757d; }
+    .form-control:focus { border-color: var(--brand-500); box-shadow:0 0 0 .15rem rgba(47,158,68,0.12); }
+    .btn-primary { background:var(--brand-600); border-color:var(--brand-600); }
+  </style>
+</head>
 <body>
-  <h2>{{ 'Register' if action=='register' else 'Login' }}</h2>
-  <form method="post">
-    <label>用户名: <input name="username"></label><br>
-    <label>密码: <input type="password" name="password"></label><br>
-    <button type="submit">{{ 'Register' if action=='register' else 'Login' }}</button>
-  </form>
-  <p><a href="{{ url_for('login') }}">Login</a> | <a href="{{ url_for('register') }}">Register</a></p>
+  <div class="auth-card">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <div>
+        <div class="brand">
+          <span class="logo" aria-hidden></span>
+          <span>MyDrive</span>
+        </div>
+        <div class="muted small">个人文件存储 · 私密</div>
+      </div>
+      <div class="text-end">
+        <div class="small muted">安全 · 私密</div>
+      </div>
+    </div>
+
+    <h3 class="mb-2">{{ 'Register' if action=='register' else 'Sign in' }}</h3>
+    <p class="muted mb-4">{{ '创建一个新账户' if action=='register' else '使用你的用户名和密码登录' }}</p>
+
+    <form method="post" novalidate>
+      <div class="mb-3">
+        <label class="form-label">用户名</label>
+        <input name="username" class="form-control form-control-lg" placeholder="示例: alice" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">密码</label>
+        <input name="password" type="password" class="form-control form-control-lg" placeholder="••••••••" required>
+      </div>
+      <div class="d-flex justify-content-between align-items-center">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="remember" checked disabled>
+          <label class="form-check-label muted" for="remember">记住我</label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-lg">{{ 'Create account' if action=='register' else 'Sign in' }}</button>
+      </div>
+    </form>
+
+    <hr class="my-4">
+    <div class="d-flex justify-content-between" style="font-size:0.95rem;">
+      <div>
+        {% if action=='register' %}
+          已有帐号？ <a href="{{ url_for('login') }}">登录</a>
+        {% else %}
+          没有帐号？ <a href="{{ url_for('register') }}">注册</a>
+        {% endif %}
+      </div>
+      <div><a href="#" class="muted">帮助</a></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 """
-
 TPL_INDEX = """
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>文件管理</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body{font-family: Arial, Helvetica, sans-serif; margin:20px;}
-    .toolbar { margin-bottom:12px; }
-    #file-list { border:1px solid #ddd; padding:8px; max-width:900px; min-height:200px; }
-    .item { padding:6px; border-bottom:1px solid #f0f0f0; display:flex; justify-content:space-between; align-items:center; }
-    .item.dragging { opacity:0.5; }
-    .left { display:flex; gap:8px; align-items:center; }
-    .dir { font-weight:700; color:#0563aa; cursor:pointer; }
-    .file { color:#333; }
-    .drop-target { background:#f7fdf7; border-left:4px solid #2d9c3a; }
-    .controls button { margin-left:6px; }
+    :root{
+      --brand-500:#2f9e44;
+      --brand-600:#23863a;
+      --muted:#6c757d;
+      --surface:#ffffff;
+      --app-bg:#f5fbf6;
+    }
+    body{ background: var(--app-bg); font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding-bottom:40px; }
+    .topbar { background: linear-gradient(90deg, rgba(47,158,68,0.08), rgba(47,158,68,0.02)); padding:12px 20px; border-bottom:1px solid rgba(0,0,0,0.04); }
+    .app-card { max-width:1100px; margin:24px auto; background:var(--surface); border-radius:10px; box-shadow:0 8px 30px rgba(18, 38, 12, 0.04); overflow:hidden; }
+    .toolbar { padding:16px 20px; display:flex; gap:12px; align-items:center; }
+    .path-badge { background: rgba(47,158,68,0.08); color:var(--brand-600); padding:6px 10px; border-radius:6px; font-weight:600; }
+    #file-list { padding:8px 20px 28px 20px; min-height:260px; }
+    .item { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-radius:8px; transition:background .12s, transform .08s; }
+    .item:hover { background: #f7fff7; transform:translateY(-2px); }
+    .left { display:flex; gap:12px; align-items:center; }
+    .name { font-weight:600; color:#123; cursor:pointer; }
+    .meta { color:var(--muted); font-size:0.9rem; }
+    .drop-target { outline: 2px dashed rgba(47,158,68,0.25); background: #f1fff1; }
+    .file-icon { font-size:1.2rem; }
+    .controls .btn { margin-left:6px; }
   </style>
 </head>
 <body>
-  <div>
-    <span>用户: {{ session.get('username') }}</span> |
-    <a href="{{ url_for('logout') }}">登出</a>
+  <div class="topbar">
+    <div class="container d-flex justify-content-between align-items-center">
+      <div class="d-flex gap-3 align-items-center">
+        <div style="width:44px;height:44px;border-radius:8px;background:linear-gradient(135deg,var(--brand-500),var(--brand-600));"></div>
+        <div>
+          <div style="font-weight:700;color:var(--brand-600)">MyDrive</div>
+          <div style="font-size:0.85rem;color:var(--muted)">私有云 · 个人文件</div>
+        </div>
+      </div>
+      <div class="text-end">
+        <div class="small" style="color:var(--muted)">用户: <strong>{{ session.get('username') }}</strong></div>
+        <div style="margin-top:6px;">
+          <a href="{{ url_for('shares') }}" class="btn btn-sm btn-outline-success">分享管理</a>
+          <a href="{{ url_for('logout') }}" class="btn btn-sm btn-outline-secondary mt-1">登出</a>
+        </div>
+      </div>
+    </div>
   </div>
+  <div class="app-card">
+    <div class="toolbar">
+      <button class="btn btn-sm btn-outline-secondary" onclick="goUp()">上一级</button>
+      <div class="ms-2">当前: <span id="cur-path" class="path-badge">/</span></div>
 
-  <div class="toolbar">
-    <button onclick="goUp()">上一级</button>
-    <span> 当前: <strong id="cur-path">/</strong> </span>
-    <button onclick="openRecycle()">回收站</button>
-    <input id="new-folder-name" placeholder="新建文件夹名">
-    <button onclick="mkdir()">创建文件夹</button>
-    <input type="file" id="files" multiple>
-    <button onclick="uploadFiles()">上传</button>
+      <div class="ms-auto d-flex align-items-center gap-2">
+        <input id="new-folder-name" class="form-control form-control-sm" placeholder="新建文件夹名" style="width:200px;">
+        <button class="btn btn-sm" style="background:var(--brand-500);color:#fff" onclick="mkdir()">创建文件夹</button>
+        <input type="file" id="files" multiple class="form-control form-control-sm" style="width:220px;">
+        <button class="btn btn-sm btn-secondary" onclick="uploadFiles()">上传</button>
+      </div>
+    </div>
+
+    <div id="file-list">
+      <!-- items will be injected by JS -->
+    </div>
   </div>
-
-  <div id="file-list"></div>
-
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     let curPath = "";
-    let inRecycle = false;
-
+    function formatBytes(bytes){
+      if (!bytes && bytes !== 0) return '';
+      const units = ['B','KB','MB','GB','TB'];
+      let i = 0;
+      while(bytes >= 1024 && i < units.length-1){ bytes /= 1024; i++; }
+      return Math.round(bytes*10)/10 + ' ' + units[i];
+    }
     async function listDir(){
-      const res = await fetch('/api/list?path=' + encodeURIComponent(curPath) + '&deleted=' + (inRecycle? '1':'0'));
+      const res = await fetch('/api/list?path=' + encodeURIComponent(curPath));
       const j = await res.json();
       document.getElementById('cur-path').innerText = '/' + (curPath || '');
       const cont = document.getElementById('file-list');
@@ -89,36 +186,56 @@ TPL_INDEX = """
       if (!j.items) return;
       for (const it of j.items){
         const div = document.createElement('div');
-        div.className = 'item';
+        div.className = 'item d-flex align-items-center justify-content-between mb-2';
         div.dataset.name = it.name;
         div.dataset.isdir = it.is_dir ? '1' : '0';
         div.draggable = true;
         const left = document.createElement('div'); left.className='left';
-        const icon = document.createElement('span'); icon.textContent = it.is_dir ? '📁' : '📄';
-        const name = document.createElement('span'); name.textContent = it.name; name.className = it.is_dir ? 'dir':'file';
-        left.appendChild(icon); left.appendChild(name);
-        const controls = document.createElement('div'); controls.className='controls';
-        if (!it.is_dir && !inRecycle){
-          const dl = document.createElement('button'); dl.textContent='下载'; dl.onclick = ()=> download(it.name);
-          controls.appendChild(dl);
-        }
-        if (!inRecycle){
-          const mv = document.createElement('button'); mv.textContent='移动'; mv.onclick = ()=> promptMove(it.name);
-          controls.appendChild(mv);
-        }
-        const del = document.createElement('button'); del.textContent = inRecycle ? '永久删除' : '删除';
-        del.onclick = ()=> deleteItem(it.name, it.is_dir);
-        controls.appendChild(del);
-        if (inRecycle){
-          const resb = document.createElement('button'); resb.textContent='恢复'; resb.onclick = ()=> restoreItem(it.name);
-          controls.appendChild(resb);
-        } else {
-          const rn = document.createElement('button'); rn.textContent='重命名'; rn.onclick = ()=> renameItem(it.name, it.is_dir);
-          controls.appendChild(rn);
+        const icon = document.createElement('span'); icon.className='file-icon';
+        icon.textContent = it.is_dir ? '📁' : '📄';
+        const nameWrap = document.createElement('div');
+        const name = document.createElement('div'); name.textContent = it.name; name.className='name';
+        const meta = document.createElement('div'); meta.className='meta';
+        meta.textContent = it.is_dir ? '文件夹' : (formatBytes(it.size) + (it.mime ? (' · ' + it.mime) : ''));
+        nameWrap.appendChild(name); nameWrap.appendChild(meta);
+        left.appendChild(icon); left.appendChild(nameWrap);
+
+        const dd = document.createElement('div'); dd.className = 'dropdown';
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-sm btn-light dropdown-toggle';
+        btn.type = 'button';
+        btn.setAttribute('data-bs-toggle', 'dropdown');
+        btn.innerText = '操作';
+        const menu = document.createElement('ul'); menu.className = 'dropdown-menu dropdown-menu-end';
+
+        function addMenuItem(label, onclickStr){
+          const li = document.createElement('li');
+          const a = document.createElement('a');
+          a.className = 'dropdown-item';
+          a.href = '#';
+          a.innerText = label;
+          a.onclick = function(e){ e.preventDefault(); eval(onclickStr); };
+          li.appendChild(a);
+          menu.appendChild(li);
         }
 
-        div.appendChild(left); div.appendChild(controls);
-        name.onclick = ()=> { if (it.is_dir) { openDir(it.name) } else { download(it.name) } }
+        if (!it.is_dir){
+          addMenuItem('下载', "downloadItem('" + escapeJs(it.name) + "')");
+        }
+        addMenuItem('移动到...', "promptMove('" + escapeJs(it.name) + "')");
+        addMenuItem('重命名', "renameItem('" + escapeJs(it.name) + "', " + (it.is_dir ? "1" : "0") + ")");
+        addMenuItem('删除', "deleteItem('" + escapeJs(it.name) + "', " + (it.is_dir ? "1" : "0") + ")");
+        if (it.is_dir){
+          addMenuItem('分享目录', "shareDir('" + escapeJs(it.name) + "')");
+          addMenuItem('取消分享', "unshareDir('" + escapeJs(it.name) + "')");
+        }
+
+        dd.appendChild(btn); dd.appendChild(menu);
+
+        div.appendChild(left);
+        div.appendChild(dd);
+
+        name.onclick = ()=> { if (it.is_dir) { openDir(it.name) } else { downloadItem(it.name) } }
 
         div.addEventListener('dragstart', (e)=> {
           e.dataTransfer.setData('text/plain', (curPath ? curPath + '/' : '') + it.name);
@@ -126,7 +243,7 @@ TPL_INDEX = """
         });
         div.addEventListener('dragend', ()=> div.classList.remove('dragging'));
 
-        if (it.is_dir && !inRecycle){
+        if (it.is_dir){
           div.addEventListener('dragover', (e)=> { e.preventDefault(); div.classList.add('drop-target'); });
           div.addEventListener('dragleave', ()=> div.classList.remove('drop-target'));
           div.addEventListener('drop', async (e)=> {
@@ -140,6 +257,10 @@ TPL_INDEX = """
 
         cont.appendChild(div);
       }
+    }
+
+    function escapeJs(s){
+      return String(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'").replace(/"/g, '\\"');
     }
 
     function openDir(name){
@@ -175,31 +296,22 @@ TPL_INDEX = """
       form.append('path', curPath);
       const res = await fetch('/api/upload', { method:'POST', body: form });
       const j = await res.json();
-      if (j.saved) { input.value=''; listDir(); }
+      if (j.saved && j.saved.length) { input.value=''; listDir(); }
       else alert(j.error||'上传错误');
     }
 
-    function download(name){
+    function downloadItem(name){
       const path = curPath ? (curPath + '/' + name) : name;
       window.location = '/api/download?path=' + encodeURIComponent(path);
     }
 
     async function deleteItem(name, isDir){
-      if (!confirm((inRecycle? '永久删除 ':'删除 ') + name + '?')) return;
+      if (!confirm('删除 ' + name + '?')) return;
       const path = curPath ? (curPath + '/' + name) : name;
       const res = await fetch('/api/delete', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ path, permanent: inRecycle })
-      });
-      const j = await res.json();
-      if (j.ok) listDir(); else alert(j.error||'错误');
-    }
-
-    async function restoreItem(name){
-      const path = curPath ? (curPath + '/' + name) : name;
-      const res = await fetch('/api/restore', {
-        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path })
+        body: JSON.stringify({ path, permanent: true })
       });
       const j = await res.json();
       if (j.ok) listDir(); else alert(j.error||'错误');
@@ -233,12 +345,40 @@ TPL_INDEX = """
       listDir();
     }
 
-    function openRecycle(){
-      inRecycle = !inRecycle;
-      if (inRecycle){
-        curPath = "";
-      }
-      listDir();
+    // ---- Sharing helpers: auto-copy link to clipboard when token returned ----
+    async function shareDir(name){
+      const path = curPath ? (curPath + '/' + name) : name;
+      const res = await fetch('/api/share', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ path })
+      });
+      const j = await res.json();
+      if (j.ok) {
+        if (j.token) {
+          const link = window.location.origin + '/s/' + j.token;
+          try {
+            await navigator.clipboard.writeText(link);
+            alert('已分享并复制到剪贴板： ' + link);
+          } catch (e) {
+            // fallback to prompt if clipboard API not available
+            prompt('分享链接（已生成，请手动复制）：', link);
+          }
+        } else {
+          alert('已分享');
+        }
+      } else alert(j.error || '分享失败');
+    }
+
+    async function unshareDir(name){
+      const path = curPath ? (curPath + '/' + name) : name;
+      const res = await fetch('/api/unshare', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ path })
+      });
+      const j = await res.json();
+      if (j.ok) alert('已取消分享'); else alert(j.error || '取消分享失败');
     }
 
     listDir();
@@ -246,12 +386,90 @@ TPL_INDEX = """
 </body>
 </html>
 """
-# ---- DB init & helpers ----
+
+TPL_SHARES = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>分享管理</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body{ background:#f5fbf6; font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding:24px; }
+    .card{ max-width:900px; margin:0 auto; background:#fff; border-radius:10px; padding:20px; box-shadow:0 8px 30px rgba(0,0,0,0.06); }
+    .muted{ color:#6c757d; }
+    .share-row{ display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid #f0f0f0; }
+    .path{ font-weight:600; color:#123; }
+    .controls button{ margin-left:8px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <div>
+        <div style="font-weight:700;color:#2f9e44">分享管理</div>
+        <div class="muted">管理你创建的公开分享链接（只读）</div>
+      </div>
+      <div>
+        <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">返回文件</a>
+        <a href="{{ url_for('logout') }}" class="btn btn-sm btn-outline-secondary">登出</a>
+      </div>
+    </div>
+
+    <div id="shares-list">
+      {% if shares %}
+        {% for s in shares %}
+          <div class="share-row" data-token="{{ s.token }}">
+            <div>
+              <div class="path">{{ (s.path + '/' + s.display_name).lstrip('/') }}</div>
+              <div class="muted" style="font-size:0.9rem;">创建于 {{ s.created_at_human }}</div>
+            </div>
+            <div class="controls">
+              <button class="btn btn-sm btn-outline-primary" onclick="copyLink('{{ s.token }}')">复制链接</button>
+              <button class="btn btn-sm btn-danger" onclick="unshare('{{ (s.path + '/' + s.display_name).lstrip('/') }}')">取消分享</button>
+            </div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div class="muted">你还没有创建任何分享链接。</div>
+      {% endif %}
+    </div>
+  </div>
+
+<script>
+  function copyLink(token){
+    const link = window.location.origin + '/s/' + token;
+    navigator.clipboard?.writeText(link).then(()=> alert('已复制：' + link)).catch(()=> prompt('分享链接：', link));
+  }
+
+  async function unshare(path){
+    if (!confirm('取消分享 ' + path + ' ?')) return;
+    const res = await fetch('/api/unshare', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ path })
+    });
+    const j = await res.json();
+    if (j.ok){
+      alert('已取消分享');
+      location.reload();
+    } else {
+      alert(j.error || '取消失败');
+    }
+  }
+</script>
+</body>
+</html>
+"""
+# ---- Database init & helpers ----
 def init_db():
+    """Create DB and tables if not exist."""
     if DB_PATH.exists():
         return
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
+        # Create users table: store user credentials and creation time.
         cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -259,6 +477,7 @@ def init_db():
             password_hash TEXT NOT NULL,
             created_at INTEGER NOT NULL
         )""")
+        # Create files table: store metadata for both files and directories.
         cur.execute("""
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -273,20 +492,34 @@ def init_db():
             modified_at INTEGER NOT NULL,
             deleted INTEGER NOT NULL DEFAULT 0
         )""")
+        # Create shares table: map directory (by path+display_name) to a token.
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS shares (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            token TEXT UNIQUE NOT NULL,
+            created_at INTEGER NOT NULL
+        )""")
         conn.commit()
 def get_db():
+    """Return a sqlite3 connection with row factory set."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-# ---- utils ----
+# ---- Utilities ----
 def login_required(f):
+    """Decorator: redirect to login if not authenticated."""
     @wraps(f)
     def deco(*a, **kw):
         if "user_id" not in session:
             return redirect(url_for("login"))
         return f(*a, **kw)
     return deco
+
 def current_user_dir():
+    """Return Path to current user's file storage directory (create if missing)."""
     uid = session.get("user_id")
     if not uid:
         return None
@@ -294,12 +527,17 @@ def current_user_dir():
     d.mkdir(parents=True, exist_ok=True)
     return d
 def safe_path_join(base: Path, rel_path: str) -> Path:
+    """
+    Safely join base and rel_path, preventing path traversal.
+    Raises ValueError on invalid path.
+    """
     rel = Path(rel_path) if rel_path else Path('.')
     joined = (base / rel).resolve()
     if not str(joined).startswith(str(base.resolve())):
         raise ValueError("Path traversal")
     return joined
 def normalize_rel_path(p: str) -> str:
+    """Normalize a relative path to use forward slashes and remove '.' parts."""
     if not p:
         return ""
     parts = [part for part in Path(p).parts if part not in ('.', '')]
@@ -342,7 +580,6 @@ def login():
     session["user_id"] = row["id"]
     session["username"] = username
     return redirect(url_for("index"))
-
 @app.route("/logout")
 def logout():
     session.clear()
@@ -351,19 +588,42 @@ def logout():
 @login_required
 def index():
     return render_template_string(TPL_INDEX)
-# ---- API: list, mkdir, upload, download, delete, restore, move, meta ----
-@app.route("/api/list", methods=["GET"])
+# ---- Shares management UI route ----
+@app.route("/shares")
 @login_required
-def api_list():
-    rel = normalize_rel_path(request.args.get("path", ""))
-    show_deleted = request.args.get("deleted", "0") == "1"
+def shares():
     uid = session["user_id"]
     with get_db() as conn:
         cur = conn.cursor()
-        if show_deleted:
-            cur.execute("SELECT display_name, path, size, mime, is_dir FROM files WHERE user_id=? AND path=? ORDER BY is_dir DESC, display_name COLLATE NOCASE", (uid, rel))
-        else:
-            cur.execute("SELECT display_name, path, size, mime, is_dir FROM files WHERE user_id=? AND path=? AND deleted=0 ORDER BY is_dir DESC, display_name COLLATE NOCASE", (uid, rel))
+        # Select shares for current user; return token, path, display_name, created_at.
+        cur.execute("SELECT id, path, display_name, token, created_at FROM shares WHERE user_id=?", (uid,))
+        rows = cur.fetchall()
+    shares = []
+    for r in rows:
+        shares.append({
+            "id": r["id"],
+            "path": r["path"],
+            "display_name": r["display_name"],
+            "token": r["token"],
+            "created_at": r["created_at"],
+            "created_at_human": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["created_at"]))
+        })
+    return render_template_string(TPL_SHARES, shares=shares)
+
+# ---- API Endpoints ----
+@app.route("/api/list", methods=["GET"])
+@login_required
+def api_list():
+    """
+    List items at given relative path.
+    Only non-deleted items are returned.
+    Query param: path (relative)
+    """
+    rel = normalize_rel_path(request.args.get("path", ""))
+    uid = session["user_id"]
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT display_name, path, size, mime, is_dir FROM files WHERE user_id=? AND path=? AND deleted=0 ORDER BY is_dir DESC, display_name COLLATE NOCASE", (uid, rel))
         rows = cur.fetchall()
     items = []
     for r in rows:
@@ -372,6 +632,10 @@ def api_list():
 @app.route("/api/mkdir", methods=["POST"])
 @login_required
 def api_mkdir():
+    """
+    Create a directory.
+    JSON: { path: "parent/dir", name: "newname" }
+    """
     data = request.get_json() or {}
     rel = normalize_rel_path(data.get("path", ""))
     name = (data.get("name") or "").strip()
@@ -391,13 +655,22 @@ def api_mkdir():
     now = int(time.time())
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO files (user_id, stored_name, display_name, path, size, mime, is_dir, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
-                    (uid, "", name_safe, rel, 0, "dir", now, now))
+        # Insert a new directory record into files table.
+        cur.execute(
+            "INSERT INTO files (user_id, stored_name, display_name, path, size, mime, is_dir, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (uid, "", name_safe, rel, 0, "dir", now, now)
+        )
         conn.commit()
     return jsonify({"ok": True})
 @app.route("/api/upload", methods=["POST"])
 @login_required
 def api_upload():
+    """
+    Upload files into given relative path.
+    Form fields:
+      - path: destination path (relative)
+      - files: file inputs (multiple)
+    """
     rel = normalize_rel_path(request.form.get("path", ""))
     uid = session["user_id"]
     user_dir = current_user_dir()
@@ -409,33 +682,58 @@ def api_upload():
         return jsonify({"error": "target not found"}), 404
     files = request.files.getlist("files")
     saved = []
+    errors = []
     now = int(time.time())
     with get_db() as conn:
         cur = conn.cursor()
         for f in files:
-            if not f or not f.filename: continue
+            if not f or not getattr(f, "filename", None):
+                errors.append({"filename": None, "error": "no file"})
+                continue
             filename = secure_filename(f.filename) or f.filename
             ext = Path(filename).suffix.lower()
-            if ALLOWED_EXT and ext not in ALLOWED_EXT: continue
-            f.seek(0, os.SEEK_END); size = f.tell(); f.seek(0)
-            if MAX_FILE_SIZE and size > MAX_FILE_SIZE: continue
+            if ALLOWED_EXT and ext not in ALLOWED_EXT:
+                errors.append({"filename": filename, "error": "ext not allowed"})
+                continue
+            try:
+                f.stream.seek(0, os.SEEK_END)
+                size = f.stream.tell()
+                f.stream.seek(0)
+            except Exception:
+                data = f.read()
+                size = len(data)
+            if MAX_FILE_SIZE and size > MAX_FILE_SIZE:
+                errors.append({"filename": filename, "error": "too large"})
+                continue
             stored = str(uuid.uuid4().hex) + ext
             dest = target_dir_fs / stored
-            f.save(str(dest))
+            try:
+                f.save(str(dest))
+            except Exception as e:
+                errors.append({"filename": filename, "error": f"save failed: {e}"})
+                continue
             mime = None
             try:
                 import magic
                 mime = magic.from_file(str(dest), mime=True)
             except Exception:
                 mime = None
-            cur.execute("INSERT INTO files (user_id, stored_name, display_name, path, size, mime, is_dir, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
-                        (uid, stored, filename, rel, size, mime, now, now))
+            # Insert file metadata into files table.
+            cur.execute(
+                "INSERT INTO files (user_id, stored_name, display_name, path, size, mime, is_dir, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                (uid, stored, filename, rel, size, mime, now, now)
+            )
             saved.append(filename)
         conn.commit()
-    return jsonify({"saved": saved})
+    return jsonify({"saved": saved, "errors": errors})
+
 @app.route("/api/download", methods=["GET"])
 @login_required
 def api_download():
+    """
+    Download a file.
+    Query param: path (relative to user root, e.g. "dir/file.txt" or "file.txt")
+    """
     relpath = normalize_rel_path(request.args.get("path", ""))
     uid = session["user_id"]
     parent = str(Path(relpath).parent) if "/" in relpath else ""
@@ -454,9 +752,13 @@ def api_download():
 @app.route("/api/delete", methods=["POST"])
 @login_required
 def api_delete():
+    """
+    Permanently delete a file or directory.
+    JSON: { path: "relative/path", permanent: true }
+    Since recycle bin is removed, deletion is permanent.
+    """
     data = request.get_json() or {}
     rel = normalize_rel_path(data.get("path", ""))
-    permanent = bool(data.get("permanent", False))
     if not rel: return jsonify({"error": "no path"}), 400
     uid = session["user_id"]
     parent = str(Path(rel).parent) if "/" in rel else ""
@@ -467,65 +769,41 @@ def api_delete():
         row = cur.fetchone()
         if not row: return jsonify({"error": "not found"}), 404
         fid = row["id"]; is_dir = bool(row["is_dir"]); stored = row["stored_name"]
-        if permanent:
-            if is_dir:
-                prefix = (row["path"] + "/" + row["display_name"]).lstrip('/')
-                cur.execute("SELECT id, stored_name, is_dir, path, display_name FROM files WHERE user_id=? AND (path=? OR path LIKE ?)", (uid, prefix, prefix + '/%'))
-                rows = cur.fetchall()
-                user_dir = current_user_dir()
-                for r in rows:
-                    if r["is_dir"]:
-                        dir_fs = user_dir / r["path"] / r["display_name"]
-                        if dir_fs.exists(): shutil.rmtree(dir_fs, ignore_errors=True)
-                    else:
-                        ffs = user_dir / r["path"] / r["stored_name"]
-                        if ffs.exists(): 
-                            try: ffs.unlink()
-                            except: pass
-                cur.execute("DELETE FROM files WHERE user_id=? AND (path=? OR path LIKE ?)", (uid, prefix, prefix + '/%'))
-            else:
-                user_dir = current_user_dir()
-                ffs = user_dir / row["path"] / stored
-                if ffs.exists():
-                    try: ffs.unlink()
-                    except: pass
-                cur.execute("DELETE FROM files WHERE id=?", (fid,))
-            conn.commit()
-            return jsonify({"ok": True})
-        else:
-            if is_dir:
-                prefix = (row["path"] + "/" + row["display_name"]).lstrip('/')
-                cur.execute("UPDATE files SET deleted=1 WHERE id=?", (fid,))
-                cur.execute("UPDATE files SET deleted=1 WHERE user_id=? AND (path=? OR path LIKE ?)", (uid, prefix, prefix + '/%'))
-            else:
-                cur.execute("UPDATE files SET deleted=1 WHERE id=?", (fid,))
-            conn.commit()
-            return jsonify({"ok": True})
-@app.route("/api/restore", methods=["POST"])
-@login_required
-def api_restore():
-    data = request.get_json() or {}
-    rel = normalize_rel_path(data.get("path", ""))
-    if not rel: return jsonify({"error": "no path"}), 400
-    uid = session["user_id"]
-    parent = str(Path(rel).parent) if "/" in rel else ""
-    name = Path(rel).name
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id, is_dir, path, display_name FROM files WHERE user_id=? AND path=? AND display_name=? AND deleted=1", (uid, parent, name))
-        row = cur.fetchone()
-        if not row: return jsonify({"error": "not found"}), 404
-        fid = row["id"]
-        if row["is_dir"]:
+        if is_dir:
             prefix = (row["path"] + "/" + row["display_name"]).lstrip('/')
-            cur.execute("UPDATE files SET deleted=0 WHERE user_id=? AND (path=? OR path LIKE ?)", (uid, prefix, prefix + '/%'))
+            # Select all descendants (dirs and files) under the directory to delete.
+            cur.execute("SELECT id, stored_name, is_dir, path, display_name FROM files WHERE user_id=? AND (path=? OR path LIKE ?)", (uid, prefix, prefix + '/%'))
+            rows = cur.fetchall()
+            user_dir = current_user_dir()
+            for r in rows:
+                if r["is_dir"]:
+                    dir_fs = user_dir / r["path"] / r["display_name"]
+                    if dir_fs.exists(): shutil.rmtree(dir_fs, ignore_errors=True)
+                else:
+                    ffs = user_dir / r["path"] / r["stored_name"]
+                    if ffs.exists():
+                        try: ffs.unlink()
+                        except: pass
+            # Delete DB records for directory and descendants.
+            cur.execute("DELETE FROM files WHERE user_id=? AND (path=? OR path LIKE ?)", (uid, prefix, prefix + '/%'))
         else:
-            cur.execute("UPDATE files SET deleted=0 WHERE id=?", (fid,))
+            user_dir = current_user_dir()
+            ffs = user_dir / row["path"] / stored
+            if ffs.exists():
+                try: ffs.unlink()
+                except: pass
+            # Delete file DB record.
+            cur.execute("DELETE FROM files WHERE id=?", (fid,))
         conn.commit()
-    return jsonify({"ok": True})
+        return jsonify({"ok": True})
 @app.route("/api/move", methods=["POST"])
 @login_required
 def api_move():
+    """
+    Move or rename a file or folder.
+    JSON: { src: "a/b", dest: "x/y" }.
+    dest can be an existing directory (move into) or a new path (rename/move).
+    """
     data = request.get_json() or {}
     src = normalize_rel_path(data.get("src", ""))
     dest = normalize_rel_path(data.get("dest", ""))
@@ -538,33 +816,32 @@ def api_move():
         cur.execute("SELECT id, is_dir, stored_name, path, display_name FROM files WHERE user_id=? AND path=? AND display_name=?", (uid, src_parent, src_name))
         row = cur.fetchone()
         if not row: return jsonify({"error": "src not found"}), 404
-
         final_parent = None; final_name = None
+        user_dir = current_user_dir()
         if dest == "":
             final_parent = ""
             final_name = src_name
         else:
             dest_parent = str(Path(dest).parent) if "/" in dest else ""
             dest_name = Path(dest).name
-            # check if dest refers to existing dir (by filesystem)
-            user_dir = current_user_dir()
             try:
                 dest_fs = safe_path_join(user_dir, dest)
             except ValueError:
                 return jsonify({"error": "invalid dest"}), 400
             if dest_fs.exists() and dest_fs.is_dir():
-                # move into this dir
                 final_parent = normalize_rel_path(dest)
                 final_name = src_name
             else:
                 parent_of_dest = str(Path(dest).parent) if "/" in dest else ""
-                parent_fs = safe_path_join(user_dir, parent_of_dest) if parent_of_dest else user_dir
+                try:
+                    parent_fs = safe_path_join(user_dir, parent_of_dest) if parent_of_dest else user_dir
+                except ValueError:
+                    return jsonify({"error": "invalid dest"}), 400
                 if not parent_fs.exists():
                     return jsonify({"error": "dest parent not found"}), 400
                 final_parent = parent_of_dest
                 final_name = secure_filename(dest_name) or dest_name
 
-        # prevent moving dir into its descendant
         if row["is_dir"]:
             src_full_fs = current_user_dir() / row["path"] / row["display_name"]
             target_fs = current_user_dir() / final_parent / final_name
@@ -573,12 +850,10 @@ def api_move():
                     return jsonify({"error": "cannot move directory into its own descendant"}), 400
             except Exception:
                 pass
-
+        # Check for conflicts in DB
         cur.execute("SELECT id FROM files WHERE user_id=? AND path=? AND display_name=? AND deleted=0", (uid, final_parent, final_name))
         if cur.fetchone():
             return jsonify({"error": "target exists"}), 400
-
-        user_dir = current_user_dir()
         if row["is_dir"]:
             src_fs = user_dir / row["path"] / row["display_name"]
             dest_fs_parent = user_dir / final_parent
@@ -587,11 +862,15 @@ def api_move():
             try:
                 src_fs.rename(dest_fs)
             except Exception:
-                try: shutil.move(str(src_fs), str(dest_fs))
-                except: return jsonify({"error": "fs move failed"}), 500
+                try:
+                    shutil.move(str(src_fs), str(dest_fs))
+                except Exception:
+                    return jsonify({"error": "fs move failed"}), 500
             old_prefix = (row["path"] + "/" + row["display_name"]).lstrip('/')
             new_prefix = (final_parent + "/" + final_name).lstrip('/')
+            # Update the directory record itself
             cur.execute("UPDATE files SET path=?, display_name=?, modified_at=? WHERE id=?", (final_parent, final_name, int(time.time()), row["id"]))
+            # Select descendants to update their path prefixes
             cur.execute("SELECT id, path FROM files WHERE user_id=? AND (path=? OR path LIKE ?)", (uid, old_prefix, old_prefix + '/%'))
             descendants = cur.fetchall()
             for d in descendants:
@@ -613,14 +892,21 @@ def api_move():
             try:
                 src_fs.rename(dest_fs)
             except Exception:
-                try: shutil.move(str(src_fs), str(dest_fs))
-                except: return jsonify({"error": "fs move failed"}), 500
+                try:
+                    shutil.move(str(src_fs), str(dest_fs))
+                except Exception:
+                    return jsonify({"error": "fs move failed"}), 500
+            # Update file DB record
             cur.execute("UPDATE files SET path=?, display_name=?, modified_at=? WHERE id=?", (final_parent, final_name, int(time.time()), row["id"]))
             conn.commit()
             return jsonify({"ok": True})
 @app.route("/api/meta", methods=["GET"])
 @login_required
 def api_meta():
+    """
+    Return metadata for a single item.
+    Query param: path (relative)
+    """
     rel = normalize_rel_path(request.args.get("path", ""))
     if not rel: return jsonify({"error": "no path"}), 400
     uid = session["user_id"]
@@ -632,8 +918,87 @@ def api_meta():
         r = cur.fetchone()
     if not r: return jsonify({"error": "not found"}), 404
     return jsonify(dict(r))
-# ---- Run ----
+# ---- Sharing endpoints ----
+@app.route("/api/share", methods=["POST"])
+@login_required
+def api_share():
+    """
+    Create or return a share token for a directory.
+    JSON: { path: "relative/path/to/dir_or_name" }
+    Returns: { ok: True, token: "..." }
+    """
+    data = request.get_json() or {}
+    rel = normalize_rel_path(data.get("path", ""))
+    if not rel:
+        return jsonify({"error": "no path"}), 400
+    uid = session["user_id"]
+    parent = str(Path(rel).parent) if "/" in rel else ""
+    name = Path(rel).name
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, is_dir FROM files WHERE user_id=? AND path=? AND display_name=? AND deleted=0", (uid, parent, name))
+        r = cur.fetchone()
+        if not r:
+            return jsonify({"error": "not found"}), 404
+        if not r["is_dir"]:
+            return jsonify({"error": "not a directory"}), 400
+        # Check if share exists
+        cur.execute("SELECT token FROM shares WHERE user_id=? AND path=? AND display_name=?", (uid, parent, name))
+        s = cur.fetchone()
+        if s:
+            return jsonify({"ok": True, "token": s["token"]})
+        token = uuid.uuid4().hex
+        now = int(time.time())
+        # Insert share record mapping directory to token.
+        cur.execute("INSERT INTO shares (user_id, path, display_name, token, created_at) VALUES (?, ?, ?, ?, ?)", (uid, parent, name, token, now))
+        conn.commit()
+        return jsonify({"ok": True, "token": token})
+@app.route("/api/unshare", methods=["POST"])
+@login_required
+def api_unshare():
+    """
+    Delete a share record.
+    JSON: { path: "relative/path/to/dir_or_name" }
+    """
+    data = request.get_json() or {}
+    rel = normalize_rel_path(data.get("path", ""))
+    if not rel:
+        return jsonify({"error": "no path"}), 400
+    uid = session["user_id"]
+    parent = str(Path(rel).parent) if "/" in rel else ""
+    name = Path(rel).name
+    with get_db() as conn:
+        cur = conn.cursor()
+        # Delete share record for this user's path+display_name
+        cur.execute("DELETE FROM shares WHERE user_id=? AND path=? AND display_name=?", (uid, parent, name))
+        conn.commit()
+    return jsonify({"ok": True})
+@app.route("/s/<token>", methods=["GET"])
+def share_serve(token):
+    """
+    Publicly list contents of a shared directory (read-only).
+    Returns simple JSON list of items under the shared directory (non-recursive).
+    """
+    if not token:
+        return "invalid", 400
+    with get_db() as conn:
+        cur = conn.cursor()
+        # Lookup share by token
+        cur.execute("SELECT user_id, path, display_name FROM shares WHERE token=?", (token,))
+        s = cur.fetchone()
+        if not s:
+            return "not found", 404
+        uid = s["user_id"]
+        prefix = (s["path"] + "/" + s["display_name"]).lstrip('/')
+        # Select items directly under the shared prefix
+        cur.execute("SELECT display_name, path, size, mime, is_dir FROM files WHERE user_id=? AND path=? AND deleted=0 ORDER BY is_dir DESC, display_name COLLATE NOCASE", (uid, prefix))
+        rows = cur.fetchall()
+    items = []
+    for r in rows:
+        items.append({"name": r["display_name"], "is_dir": bool(r["is_dir"]), "size": r["size"], "mime": r["mime"]})
+    return jsonify({"shared_path": prefix, "items": items})
+# ---- App entrypoint ----
 if __name__ == "__main__":
     init_db()
     print("Starting app on http://127.0.0.1:5000")
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=False, host="0.0.0.0", port=5000)
