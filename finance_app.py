@@ -1,11 +1,52 @@
 # finance_app.py
-# Single-file finance manager (Flask + sqlite3 raw SQL)
-# - password hashing: bcrypt
-# - charts: Chart.js (frontend)
-# - UI: Bootstrap 5 + Bootstrap Icons
-# - export Excel: openpyxl
-# - DB: sqlite3 (raw SQL)
-# Note: Example single-file for local/trusted use. For production use HTTPS, CSRF, stronger session management, etc.
+"""
+财务管理程序 
+
+这是一个用于本地或受信环境的单文件财务管理应用（Python + Flask），功能包括用户注册/登录、记录与管理个人交易、每月统计、图表展示与 Excel 导出。后端使用 sqlite3 保存数据，前端使用 Bootstrap 5 提供界面，Chart.js 绘制每月收入与支出柱状图，openpyxl 用于生成可下载的 Excel 文件。密码使用 bcrypt 哈希存储。
+主要特性
+- 单文件部署：整个应用包含在一个文件 finance_app.py 中，便于本地运行与快速演示。
+- 用户认证：支持注册与登录（用户名唯一、密码以 bcrypt 哈希保存）。会话在前端使用 localStorage 简单保存当前用户信息（适合本地/受信环境，不适合生产级会话管理）。
+- 多用户隔离：每条交易记录关联到创建者的 user_id，API 在读取/修改/删除交易时通过 user_id 验证权限，确保每个人管理自己的财务数据。
+- 交易管理：支持添加、编辑、删除交易。交易字段包含描述、金额、类型（income 或 expense）、分类与日期（ISO 格式）。
+- 过滤与查询：可以按用户、分类、类型与日期范围拉取交易数据；按月过滤支持通过 start_date/end_date 查询。
+- 每月汇总：后端提供按月聚合的收入与支出汇总（返回 income、expense、balance），用于表格与图表展示。
+- 图表展示：前端使用 Chart.js 绘制柱状图，分别显示收入和支出两组数据，支持鼠标提示与清晰对比。
+- Excel 导出：提供 /api/export 和 /api/export_excel 两个路由，使用 openpyxl 生成包含 “Transactions” 与 “Monthly Summary” 两个工作表的 .xlsx 文件并触发下载。
+- 界面主题：页面采用淡绿色与淡淡金色的卡片主题，整体背景为淡红色，按钮与文本色彩配合以提高可读性（仅视觉样式修改，不影响功能）。
+实现与技术细节
+- 后端框架：Flask（单进程示例，app.run(debug=False)）。
+- 数据库：sqlite3（文件 finance.db）。首次运行时自动创建 users 与 transactions 表，并插入示例用户 demo/demo（密码以 bcrypt 哈希保存）。
+- 密码安全：使用 bcrypt.gensalt() + bcrypt.hashpw() 存储密码为二进制哈希；登录时使用 bcrypt.checkpw() 验证。
+- SQL 使用：直接以原生 SQL 语句操作 sqlite，未使用 ORM。数据库连接在 Flask 应用上下文中通过 g 缓存，并在上下文结束时关闭。
+- API 路由（主要）：
+  - POST /api/register — 注册新用户，返回 user_id 与 username。
+  - POST /api/login — 登录验证，返回 user_id 与 username。
+  - POST /api/add_transaction — 添加交易，需要 JSON 中包含 user_id。
+  - POST /api/edit_transaction — 编辑交易，需提供 user_id 与交易 id，且交易必须属于该用户。
+  - POST /api/delete_transaction — 删除交易，需提供 user_id 与交易 id，且交易必须属于该用户。
+  - GET /api/get_transactions — 获取交易列表，支持 user_id、start_date、end_date、category、type 过滤。
+  - GET /api/monthly_summary — 返回按月的收入/支出/结余聚合，用于图表与表格。
+  - GET /api/export 和 /api/export_excel — 导出当前用户所有交易与月度汇总为 Excel 文件。
+- 前端实现：
+  - 单页面 HTML 返回（由 Flask 的 index 路由直接以三联引号字符串返回完整页面）。
+  - 使用 localStorage 存储当前登录用户（键名 currentUser），所有对 API 的调用通过在请求体或查询参数中带上 user_id 实现“会话”识别。
+  - 交易表、月度表格与图表都在前端渲染；图表配置已确保同时显示收入与支出两条 dataset（绿色表示收入、红色表示支出）。
+  - 简易快速添加与高级添加两种方式：快速在顶部填写描述/金额/分类并一键新增收入或支出；高级添加使用 prompt 支持自定义日期。
+已知限制与安全提示（重要）
+- 仅适合本地或受信网络环境做演示或个人使用。当前实现并未使用服务器端会话管理、CSRF 保护、表单/输入的严格服务端验证或 HTTPS 强制。
+- 前端基于 localStorage 存储 user_id，易被客户端篡改；仅用作方便演示，不能作为真实安全认证会话。
+- raw SQL 语句直接拼接参数均通过参数化查询传递，但仍建议在生产中使用更严格输入校验与 ORM 以降低开发错误风险。
+- 若要在公网部署：务必启用 HTTPS、引入安全会话（服务器端签名 cookie）、CSRF 保护、加强密码策略与速率限制、对导出与文件处理添加权限与审计等。
+
+如何运行（简要）
+1. 安装依赖：pip install flask bcrypt openpyxl
+2. 将完整文件保存为 finance_app.py，运行：python finance_app.py
+3. 在浏览器访问 http://127.0.0.1:5000 ，使用示例账户 demo/demo 或自行注册新用户。
+4. 所有数据保存在本地文件 finance.db 中。
+
+总结
+这是一个面向本地与受信场景的轻量级单文件财务管理应用，覆盖用户认证、交易管理、月度汇总、图表展示与 Excel 导出。视觉主题已根据要求调整为淡绿色/淡淡金色卡片和淡红色背景，Chart.js 图表明确区分收入与支出，且每个用户的数据被隔离，适合个人或小范围演示与本地使用。
+"""
 from flask import Flask, g, request, jsonify, send_file
 import sqlite3, os
 from datetime import datetime
@@ -259,6 +300,7 @@ def api_export_excel():
     filename = f"finance_{user['username']}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.xlsx"
     return send_file(bio, download_name=filename, as_attachment=True,
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
 # ---------- New Export route (English named) ----------
 @app.route('/api/export', methods=['GET'])
 def api_export():
@@ -295,6 +337,7 @@ def api_export():
     filename = f"finance_{user['username']}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.xlsx"
     return send_file(bio, download_name=filename, as_attachment=True,
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
 # ---------- Frontend page (single-file) ----------
 @app.route('/')
 def index():
@@ -310,10 +353,44 @@ def index():
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-body{max-width:1100px;margin:16px auto;padding:12px;}
+:root{
+  --soft-green: #e6f7ec;     /* 淡绿色 */
+  --soft-gold: #fff7e6;      /* 淡淡金色 */
+  --soft-red-bg: #fff1f2;    /* 淡红色背景 */
+  --card-border: #e4e4e4;
+}
+body{
+  background: var(--soft-red-bg);
+  max-width:1100px;margin:16px auto;padding:12px;
+  color:#2b2b2b;
+}
 .small{font-size:0.9rem;color:#555;}
-.card{margin-bottom:12px;}
+.card{
+  margin-bottom:12px;
+  background: linear-gradient(180deg, var(--soft-green), var(--soft-gold));
+  border: 1px solid var(--card-border);
+  box-shadow: 0 1px 6px rgba(0,0,0,0.03);
+}
 .table-fixed tbody{height:300px;overflow:auto;display:block;}
+.btn-primary{
+  background: linear-gradient(180deg,#bfeccf,#9fd8b3);
+  border-color: rgba(0,0,0,0.06);
+}
+.btn-success{
+  background: linear-gradient(180deg,#dff7e8,#bfeecd);
+  border-color: rgba(0,0,0,0.04);
+  color: #0b5b34;
+}
+.btn-danger{
+  background: linear-gradient(180deg,#ffdfcf,#ffc69f);
+  border-color: rgba(0,0,0,0.04);
+  color:#6b1f1f;
+}
+.btn-outline-primary{
+  background: transparent;
+  border-color: rgba(0,0,0,0.06);
+}
+h3 { margin:0; color:#184d2e; }
 </style>
 </head>
 <body>
@@ -562,14 +639,27 @@ async function loadChart(){
   const incomes = data.map(d=>d.income);
   const expenses = data.map(d=>d.expense);
   const ctx = document.getElementById('monthChart').getContext('2d');
+  // Chart config: ensure both income and expense datasets are shown distinctly
   if(monthChart) monthChart.destroy();
   monthChart = new Chart(ctx, {
     type: 'bar',
     data: {
       labels: labels,
       datasets: [
-        {label: '收入', data: incomes, backgroundColor: 'rgba(40,167,69,0.7)'},
-        {label: '支出', data: expenses, backgroundColor: 'rgba(220,53,69,0.7)'}
+        {
+          label: '收入',
+          data: incomes,
+          backgroundColor: 'rgba(40,167,69,0.7)', // 绿色用于收入
+          borderColor: 'rgba(40,167,69,0.9)',
+          borderWidth: 1
+        },
+        {
+          label: '支出',
+          data: expenses,
+          backgroundColor: 'rgba(220,53,69,0.7)', // 红色用于支出
+          borderColor: 'rgba(220,53,69,0.9)',
+          borderWidth: 1
+        }
       ]
     },
     options: {
@@ -577,6 +667,10 @@ async function loadChart(){
       scales: {
         x: { stacked: false },
         y: { beginAtZero: true }
+      },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        tooltip: { enabled: true }
       }
     }
   });
