@@ -7,3 +7,24 @@ TFIDF(t,d) = TF(t,d) * IDF(t)。
 BERT 特征向量来自预训练的双向 Transformer 编码器，是稠密、上下文敏感的表示。输入为标记序列 x = (x1,...,xm)（含位置编码和子词分割），每层通过多头自注意力和前馈网络变换，注意力计算为
 Attention(Q,K,V) = softmax(Q K^T / √d_k) V,
 其中 Q,K,V 是由上一层隐藏状态经线性映射得到的查询/键/值矩阵。经 L 层后得到每个位置的隐藏向量 h^{(L)}_i；句子级向量常取 h^{(L)}_{[CLS]} 或对位置向量池化。BERT 表示能够捕捉词的上下文依赖、语义和句法信息，同一词在不同上下文会有不同向量，因而在语义匹配、问答和分类等下游任务上通常优于 TF-IDF。缺点：计算与内存开销大（自注意力的复杂度约为 O(m^2 · d)），需要预训练或微调，向量不易逐维解释为具体词权重，存储和推理成本远高于稀疏的 TF-IDF。
+
+
+TF‑IDF 本质上更偏向于词语频率。 它通过 TF（词频）来反映某词在当前文档中的重要性，再乘以 IDF（逆文档频率）来削弱在整个语料中普遍出现的词。
+因此 TF‑IDF 的核心驱动力是“在本篇文档中出现得多且在语料中出现得少”的词——也就是以词频为主、再用全局文档频率做校正。
+
+
+
+
+
+
+TF-IDF is a sparse linear representation based on term statistics. Let f(t,d) be the raw count (or normalized count) of term t in document d, N the total number of documents in the corpus, and n(t) the number of documents containing term t. Common formulas are
+TF(t,d) = f(t,d) / max_{t'} f(t',d) (or simply f(t,d)),
+IDF(t) = log(1 + N / (1 + n(t))) (or the smoothed variant log(N/(1+n(t))) + 1),
+TFIDF(t,d) = TF(t,d) * IDF(t).
+The result is a vector whose dimensionality equals the vocabulary size and is sparse, with each component corresponding directly to a specific term’s weight. Advantages: simple to compute, interpretable (each dimension maps to a term weight), suitable for keyword-based retrieval and fast similarity calculations. Disadvantages: assumes term independence, ignores word order and context, cannot disambiguate homographs, is less robust for short texts and morphological variants, and cannot capture phrases or syntactic structure.
+
+BERT feature vectors come from a pretrained bidirectional Transformer encoder and are dense, context-sensitive representations. The input is a token sequence x = (x1,...,xm) (including position embeddings and subword tokenization). Each layer applies multi-head self-attention and feed-forward transforms; attention is computed as
+Attention(Q,K,V) = softmax(Q K^T / √d_k) V,
+where Q, K, V are query/key/value matrices derived from the previous layer’s hidden states. After L layers you obtain a hidden vector h^{(L)}_i for each position; a sentence-level vector commonly uses h^{(L)}_{[CLS]} or pooled token vectors. BERT representations capture contextual dependencies, semantics, and syntax, so the same word has different vectors in different contexts, and they typically outperform TF-IDF on semantic matching, question answering, and classification. Drawbacks: high compute and memory cost (self-attention complexity ≈ O(m^2 · d)), require pretraining or fine-tuning, vectors are not easily interpretable per-dimension as specific term weights, and storage/inference costs are much higher than sparse TF-IDF.
+
+TF-IDF is essentially more biased toward term frequency. It uses TF (term frequency) to reflect a term’s importance in the current document and multiplies by IDF (inverse document frequency) to downweight terms that are common across the corpus. Therefore the core driver of TF-IDF is terms that “occur frequently in this document but rarely in the corpus” — in other words, primarily driven by term frequency with a global document-frequency correction.
