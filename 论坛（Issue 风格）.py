@@ -1,4 +1,4 @@
-# app.py — 单文件 Flask 论坛（Issue 风格），SQLite，Flask-WTF，分页，淡绿色主题
+# app.py — 单文件 Flask 论坛，GitHub Issue 风格，宽布局，LCS 搜索，SQLite，Flask-WTF
 import os
 import sqlite3
 from datetime import datetime
@@ -16,8 +16,8 @@ SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-me')
 app = Flask(__name__)
 app.config['DATABASE'] = DATABASE
 app.config['SECRET_KEY'] = SECRET_KEY
-app.config['WTF_CSRF_TIME_LIMIT'] = None  # CSRF token 不过期便于本地测试
-# ----- Schema (will be executed on first run) -----
+app.config['WTF_CSRF_TIME_LIMIT'] = None  # 方便本地测试
+# ----- Schema -----
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS issues (
     is_open INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    labels TEXT DEFAULT '',
     FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS comments (
@@ -46,226 +47,305 @@ CREATE TABLE IF NOT EXISTS comments (
     FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
 );
 """
-# ----- Static CSS and templates embedded as strings -----
+# ----- CSS (更宽、改进视觉) -----
 STYLE_CSS = """
 :root{
-  --primary-green: #8fbf9f;
-  --primary-dark: #6aa37a;
-  --muted-text: #3a4a3a;
-  --bg: #f6fbf7;
+  --bg: #f6f8fa;
+  --nav-bg: #0d1117;
+  --muted: #6c7781;
+  --accent: #1f6feb;
+  --success: #2ea44f;
+  --danger: #d73a49;
+  --card-bg: #ffffff;
 }
+*{box-sizing:border-box}
 body{
-  background: var(--bg);
-  color: var(--muted-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial;
-  line-height: 1.6;
-  padding-bottom: 60px;
+  margin:0;
+  font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial;
+  background: linear-gradient(180deg,var(--bg) 0%, #eef3f7 100%);
+  color: #0b1220;
+  -webkit-font-smoothing:antialiased;
 }
-.container-fluid {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 1.5rem;
+.app-header{
+  background: var(--nav-bg);
+  color: #c9d1d9;
+  padding: 0.6rem 1rem;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.4);
 }
-.navbar {
-  background: linear-gradient(90deg, rgba(143,191,159,0.12), rgba(106,163,122,0.06));
-  border: none;
-  box-shadow: none;
+.container{
+  max-width: 1600px; /* 更宽 */
+  margin: 1.25rem auto;
+  padding: 0 1.25rem;
 }
-.navbar-brand { color: var(--primary-dark) !important; font-weight: 600; }
-.nav-link { color: rgba(58,74,58,0.9) !important; }
-.btn-primary {
-  background-color: var(--primary-green);
-  border-color: var(--primary-green);
-  color: #fff;
-}
-.btn-outline-secondary {
-  color: var(--primary-dark);
-  border-color: rgba(106,163,122,0.35);
-}
-.btn-outline-danger {
-  border-color: rgba(200,80,80,0.2);
-  color: #c85050;
-}
-.list-group-item {
-  border: none;
-  background: transparent;
-  padding: 0.75rem 0;
-}
-.list-group-item + .list-group-item { border-top: 1px solid rgba(100,140,110,0.06); }
-.issue-body { background: transparent; padding: 0; }
-.card {
-  border: none;
-  background: rgba(143,191,159,0.06);
-  padding: 0.6rem 0.9rem;
-  margin-bottom: 0.6rem;
-  box-shadow: none;
-}
-.form-control {
-  border-radius: 6px;
-  border: 1px solid rgba(100,140,110,0.14);
+.header-row{ display:flex; align-items:center; gap:1rem; }
+.brand{ font-weight:700; font-size:1.25rem; color:#ffffff; margin-right:0.75rem; text-decoration:none; }
+.header-search{ flex:1; }
+.nav-actions{ margin-left:auto; display:flex; gap:0.5rem; align-items:center; }
+
+.btn {
+  display:inline-block;
+  padding:0.45rem 0.7rem;
+  border-radius:6px;
   background: #fff;
+  color: #0b1220;
+  text-decoration:none;
+  font-size:0.9rem;
+  border:1px solid rgba(27,31,35,0.06);
 }
-.main-row { display: flex; gap: 1.25rem; align-items: flex-start; }
-.left-col { flex: 2; }
-.right-col { flex: 1; max-width: 380px; }
-.text-muted { color: rgba(58,74,58,0.6) !important; font-size: 0.95rem; }
-small { font-size: 0.9rem; }
-footer { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(143,191,159,0.04); padding: 0.5rem 0; text-align: center; font-size: 0.9rem; color: rgba(58,74,58,0.6); }
+.btn-primary { background: var(--accent); color:#fff; border-color:rgba(31,111,235,0.12); }
+.small { font-size:0.86rem; color:var(--muted); }
+
+/* Layout: 更自由铺开 */
+.layout {
+  display:flex;
+  gap:1.5rem;
+  align-items:flex-start;
+}
+.main {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--card-bg);
+  border-radius:10px;
+  padding: 1.25rem;
+  box-shadow: 0 8px 24px rgba(15,23,42,0.06);
+}
+.sidebar {
+  width: 320px;
+  background: var(--card-bg);
+  border-radius:10px;
+  padding:1rem;
+  box-shadow: 0 8px 20px rgba(15,23,42,0.04);
+}
+
+/* Issues list */
+.issue-list { list-style:none; padding:0; margin:0; }
+.issue-item {
+  border-bottom:1px solid #eef3f6;
+  padding:1rem 0;
+  display:flex;
+  gap:1rem;
+  align-items:flex-start;
+}
+.issue-metadata { width:160px; flex-shrink:0; color:var(--muted); font-size:0.9rem; }
+.issue-main { flex:1; }
+.issue-title { margin:0; font-size:1.05rem; color:var(--accent); text-decoration:none; font-weight:600; }
+.issue-excerpt { margin:0.35rem 0; color:#374151; }
+.issue-flags { display:flex; gap:0.6rem; align-items:center; margin-top:0.35rem; flex-wrap:wrap; }
+.label {
+  display:inline-block;
+  padding:0.18rem 0.5rem;
+  background:#e6f0ff;
+  color: #0b4dd8;
+  border-radius:999px;
+  font-size:0.78rem;
+  border:1px solid rgba(11,77,216,0.08);
+}
+
+/* Issue detail */
+.issue-header { border-bottom:1px solid #eef3f6; padding-bottom:0.6rem; margin-bottom:0.9rem; }
+.issue-title-big { font-size:1.45rem; margin:0; color:#0b1220; }
+.issue-meta { color:var(--muted); margin-top:0.35rem; }
+.issue-body {
+  background:#fff;
+  padding:1rem;
+  border-radius:8px;
+  border:1px solid #eef3f6;
+  color:#111827;
+  margin-bottom:0.9rem;
+}
+
+/* Comment */
+.comment {
+  border:1px solid #eef3f6;
+  border-radius:12px;
+  padding:0.9rem;
+  margin-bottom:0.75rem;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(12,18,28,0.03);
+}
+.comment .meta { color:var(--muted); font-size:0.86rem; margin-bottom:0.5rem; }
+.comment .body { color:#111827; white-space:pre-wrap; }
+
+/* Forms */
+.form-control {
+  width:100%;
+  padding:0.6rem 0.75rem;
+  border-radius:8px;
+  border:1px solid #e6eef6;
+  font-size:0.95rem;
+  background:#fff;
+}
+
+/* footer */
+.footer {
+  text-align:center;
+  color:var(--muted);
+  margin:1rem 0;
+  font-size:0.95rem;
+}
+
+/* Responsive */
+@media (max-width: 1000px){
+  .layout{ flex-direction:column; }
+  .sidebar{ width:100%;}
+}
 """
 
+# ----- BASE_HTML (无 blocks) -----
 BASE_HTML = """
 <!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{% block title %}MiniForum{% endblock %}</title>
+  <title>{{ title }}</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>{{ style_css }}</style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg">
-  <div class="container-fluid">
-    <a class="navbar-brand" href="{{ url_for('index') }}">MiniForum</a>
-    <div class="collapse navbar-collapse">
-      <ul class="navbar-nav ms-auto">
-        {% if user %}
-          <li class="nav-item"><a class="nav-link" href="#">{{ user['username'] }}</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('new_issue') }}">New Issue</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
-        {% else %}
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('login') }}">Login</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('register') }}">Register</a></li>
-        {% endif %}
-      </ul>
+<header class="app-header">
+  <div class="container header-row">
+    <a class="brand" href="{{ url_for('index') }}">Repo·Mini</a>
+    <div class="header-search">
+      <form method="get" action="{{ url_for('index') }}">
+        <input name="q" class="form-control" placeholder="Search issues (LCS relevance)" value="{{ request.args.get('q','') }}">
+      </form>
+    </div>
+    <div class="nav-actions">
+      {% if user %}
+        <a class="btn" href="#">{{ user['username'] }}</a>
+        <a class="btn" href="{{ url_for('new_issue') }}">New issue</a>
+        <a class="btn" href="{{ url_for('logout') }}">Sign out</a>
+      {% else %}
+        <a class="btn" href="{{ url_for('login') }}">Sign in</a>
+        <a class="btn btn-primary" href="{{ url_for('register') }}">Sign up</a>
+      {% endif %}
     </div>
   </div>
-</nav>
+</header>
 
-<div class="container-fluid">
+<div class="container">
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
+      <div style="margin-top:0.6rem;">
       {% for category, msg in messages %}
         <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
           {{ msg }}
           <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
         </div>
       {% endfor %}
+      </div>
     {% endif %}
   {% endwith %}
 
-  {% block content %}{% endblock %}
+  {{ body|safe }}
 </div>
-
-<footer>轻量 Issue 风格论坛 — 淡绿色护眼主题</footer>
-
+<div class="container footer">
+  版权所有2025
+</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 """
-INDEX_HTML = """
-{% extends base %}
-{% block title %}Issues - MiniForum{% endblock %}
-{% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1>Issues</h1>
-  <a class="btn btn-primary" href="{{ url_for('new_issue') }}">New Issue</a>
-</div>
-<div class="main-row">
-  <div class="left-col">
-    <div class="list-group">
-      {% for issue in issues %}
-        <a href="{{ url_for('view_issue', issue_id=issue['id']) }}" class="list-group-item list-group-item-action">
-          <div class="d-flex w-100 justify-content-between">
-            <h5 class="mb-1">{{ issue['title'] }}</h5>
-            <small class="text-muted">{{ issue['created_at'] }}</small>
-          </div>
-          <p class="mb-1 text-truncate issue-body" style="max-width:85%">{{ issue['body'] }}</p>
-          <small>作者: {{ issue['author_name'] }} — {% if issue['is_open'] %}<span class="text-success">Open</span>{% else %}<span class="text-danger">Closed</span>{% endif %}</small>
-        </a>
-      {% else %}
-        <div class="text-muted">暂无帖子</div>
-      {% endfor %}
+# ----- Body templates（简洁美观） -----
+INDEX_BODY = """
+<div class="layout">
+  <main class="main">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
+      <h1 style="margin:0;">Issues</h1>
+      <div class="small">共 {{ total }} 个 · 第 {{ page }} 页 / 共 {{ last_page }} 页</div>
     </div>
+
+    <ul class="issue-list">
+      {% for issue, score in issues %}
+      <li class="issue-item">
+        <div class="issue-metadata">
+          {% if issue['is_open'] %}
+            <div style="color:var(--success); font-weight:700;">● Open</div>
+          {% else %}
+            <div style="color:var(--danger); font-weight:700;">● Closed</div>
+          {% endif %}
+          <div style="margin-top:0.5rem;">{{ issue['created_at'][:10] }}</div>
+        </div>
+        <div class="issue-main">
+          <a class="issue-title" href="{{ url_for('view_issue', issue_id=issue['id']) }}">{{ issue['title'] }}</a>
+          <div class="issue-excerpt">{{ issue['body'][:220] }}{% if issue['body']|length > 220 %}...{% endif %}</div>
+          <div class="issue-flags">
+            <div class="small">#{{ issue['id'] }}</div>
+            <div class="small">opened by {{ issue['author_name'] }}</div>
+            <div class="small">relevance: {{ score }}</div>
+            {% if issue['labels'] %}
+              {% for l in issue['labels'].split(',') if l %}
+                <span class="label">{{ l }}</span>
+              {% endfor %}
+            {% endif %}
+          </div>
+        </div>
+      </li>
+      {% else %}
+      <li class="small">暂无帖子</li>
+      {% endfor %}
+    </ul>
 
     <nav aria-label="Page navigation" class="mt-3">
       <ul class="pagination">
         <li class="page-item {% if page<=1 %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('index', page=page-1) }}">上一页</a>
+          <a class="page-link" href="{{ url_for('index', page=page-1, q=request.args.get('q','')) }}">Previous</a>
         </li>
-        <li class="page-item disabled"><span class="page-link">第 {{ page }} 页 / 共 {{ last_page }} 页</span></li>
+        <li class="page-item disabled"><span class="page-link">Page {{ page }} / {{ last_page }}</span></li>
         <li class="page-item {% if page>=last_page %}disabled{% endif %}">
-          <a class="page-link" href="{{ url_for('index', page=page+1) }}">下一页</a>
+          <a class="page-link" href="{{ url_for('index', page=page+1, q=request.args.get('q','')) }}">Next</a>
         </li>
       </ul>
     </nav>
-  </div>
-
-  <div class="right-col">
-    <div>
-      <h5>说明</h5>
-      <p class="text-muted small">轻量 Issue 风格论坛，支持注册、登录、发帖与评论。作者可关闭/删除自己的帖子。</p>
-    </div>
-  </div>
+  </main>
 </div>
-{% endblock %}
 """
-
-REGISTER_HTML = """
-{% extends base %}
-{% block title %}注册{% endblock %}
-{% block content %}
-<h2>注册</h2>
-<form method="post" class="row g-3" novalidate>
+REGISTER_BODY = """
+<h2>Sign up</h2>
+<form method="post" style="max-width:720px;" novalidate>
   {{ form.hidden_tag() }}
-  <div class="col-6">
+  <div class="mb-3">
     {{ form.username.label(class="form-label") }}
     {{ form.username(class="form-control") }}
     {% for err in form.username.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
   </div>
-  <div class="col-6">
+  <div class="mb-3">
     {{ form.password.label(class="form-label") }}
     {{ form.password(class="form-control") }}
     {% for err in form.password.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
   </div>
-  <div class="col-12">
+  <div>
     {{ form.submit(class="btn btn-primary") }}
+    <a class="btn" href="{{ url_for('login') }}">Have an account? Sign in</a>
   </div>
 </form>
-{% endblock %}
 """
 
-LOGIN_HTML = """
-{% extends base %}
-{% block title %}登录{% endblock %}
-{% block content %}
-<h2>登录</h2>
-<form method="post" class="row g-3" novalidate>
+LOGIN_BODY = """
+<h2>Sign in</h2>
+<form method="post" style="max-width:720px;" novalidate>
   {{ form.hidden_tag() }}
   {{ form.next }}
-  <div class="col-6">
+  <div class="mb-3">
     {{ form.username.label(class="form-label") }}
     {{ form.username(class="form-control") }}
     {% for err in form.username.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
   </div>
-  <div class="col-6">
+  <div class="mb-3">
     {{ form.password.label(class="form-label") }}
     {{ form.password(class="form-control") }}
     {% for err in form.password.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
   </div>
-  <div class="col-12">
+  <div>
     {{ form.submit(class="btn btn-primary") }}
+    <a class="btn" href="{{ url_for('register') }}">Create an account</a>
   </div>
 </form>
-{% endblock %}
 """
-
-NEW_ISSUE_HTML = """
-{% extends base %}
-{% block title %}创建帖子{% endblock %}
-{% block content %}
-<h2>创建帖子</h2>
-<form method="post" novalidate>
+NEW_ISSUE_BODY = """
+<h2>New issue</h2>
+<form method="post" style="max-width:1000px;" novalidate>
   {{ form.hidden_tag() }}
   <div class="mb-3">
     {{ form.title.label(class="form-label") }}
@@ -277,77 +357,87 @@ NEW_ISSUE_HTML = """
     {{ form.body(class="form-control", rows="8") }}
     {% for err in form.body.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
   </div>
+  <div class="mb-3">
+    <label class="form-label">Labels (comma separated)</label>
+    <input name="labels" class="form-control" placeholder="bug, enhancement, docs" value="{{ labels|default('') }}">
+  </div>
   {{ form.submit(class="btn btn-primary") }}
+  <a class="btn" href="{{ url_for('index') }}">Cancel</a>
 </form>
-{% endblock %}
 """
 
-ISSUE_HTML = """
-{% extends base %}
-{% block title %}{{ issue['title'] }}{% endblock %}
-{% block content %}
-<div class="d-flex justify-content-between align-items-start mb-2">
-  <div>
-    <h2 style="margin-bottom:0">{{ issue['title'] }}</h2>
-    <p class="text-muted small">作者: {{ issue['author_name'] }} · 创建于 {{ issue['created_at'] }}</p>
+ISSUE_BODY = """
+<div class="issue-header">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+    <div>
+      <h2 class="issue-title-big">{{ issue['title'] }}</h2>
+      <div class="issue-meta small">#{{ issue['id'] }} opened {{ issue['created_at'][:10] }} by {{ issue['author_name'] }}</div>
+    </div>
+    <div style="display:flex; gap:0.5rem; align-items:center;">
+      {% if issue['is_open'] %}
+        <form method="post" action="{{ url_for('toggle_issue', issue_id=issue['id']) }}" style="margin:0;">
+          <button class="btn" type="submit">Close issue</button>
+        </form>
+      {% else %}
+        <form method="post" action="{{ url_for('toggle_issue', issue_id=issue['id']) }}" style="margin:0;">
+          <button class="btn btn-primary" type="submit">Reopen issue</button>
+        </form>
+      {% endif %}
+      {% if user and user['id'] == issue['author_id'] %}
+        <form method="post" action="{{ url_for('delete_issue', issue_id=issue['id']) }}" onsubmit="return confirm('Delete this issue?');" style="margin:0;">
+          <button class="btn" type="submit">Delete</button>
+        </form>
+      {% endif %}
+    </div>
   </div>
-  <div>
-    {% if issue['is_open'] %}
-      <span class="badge bg-success">Open</span>
-    {% else %}
-      <span class="badge bg-danger">Closed</span>
+
+  <div style="margin-top:0.6rem;">
+    {% if issue['labels'] %}
+      {% for l in issue['labels'].split(',') if l %}
+        <span class="label">{{ l }}</span>
+      {% endfor %}
     {% endif %}
   </div>
 </div>
 
-<div class="mb-3 issue-body">
-  <p>{{ issue['body'] }}</p>
-
-  {% if user and user['id'] == issue['author_id'] %}
-  <form method="post" action="{{ url_for('toggle_issue', issue_id=issue['id']) }}" class="d-inline">
-    <button class="btn btn-sm btn-outline-secondary" type="submit">{% if issue['is_open'] %}Close{% else %}Reopen{% endif %}</button>
-  </form>
-  <form method="post" action="{{ url_for('delete_issue', issue_id=issue['id']) }}" class="d-inline" onsubmit="return confirm('删除将不可恢复，确定吗？');">
-    <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
-  </form>
-  {% endif %}
+<div class="issue-body">
+  <div class="small">作者: {{ issue['author_name'] }} · {{ issue['created_at'] }}</div>
+  <div style="height:8px;"></div>
+  <div>{{ issue['body'] }}</div>
 </div>
-
-<hr>
-
-<h4>讨论</h4>
-<div class="mb-3">
+<h4>Comments ({{ comments|length }})</h4>
+<div>
   {% for comment in comments %}
-    <div class="card">
-      <div>
-        <p class="mb-1">{{ comment['body'] }}</p>
-        <small class="text-muted">by {{ comment['author_name'] }} · {{ comment['created_at'] }}</small>
+    <div class="comment">
+      <div class="meta">{{ comment['author_name'] }} commented · {{ comment['created_at'] }}</div>
+      <div class="body">{{ comment['body'] }}</div>
+      <div style="margin-top:0.5rem;">
         {% if user and (user['id'] == comment['author_id'] or user['id'] == issue['author_id']) %}
-        <form method="post" action="{{ url_for('delete_comment', comment_id=comment['id']) }}" class="d-inline float-end" onsubmit="return confirm('删除评论？');">
-          <button class="btn btn-sm btn-outline-danger">删除</button>
+        <form method="post" action="{{ url_for('delete_comment', comment_id=comment['id']) }}" style="display:inline;" onsubmit="return confirm('Delete comment?');">
+          <button class="btn" type="submit">Delete</button>
         </form>
         {% endif %}
       </div>
     </div>
   {% else %}
-    <div class="text-muted">暂无评论</div>
+    <div class="small">暂无评论</div>
   {% endfor %}
 </div>
 
-{% if user %}
-<form method="post" novalidate>
-  {{ comment_form.hidden_tag() }}
-  <div class="mb-3">
-    {{ comment_form.body.label(class="form-label") }}
-    {{ comment_form.body(class="form-control", rows="4") }}
-    {% for err in comment_form.body.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
-  </div>
-  {{ comment_form.submit(class="btn btn-primary") }}
-</form>
-{% else %}
-<p><a href="{{ url_for('login', next=request.path) }}">登录</a> 后可以发表评论。</p>
-{% endif %}
-{% endblock %}
+<div style="margin-top:0.9rem;">
+  {% if user %}
+  <form method="post" novalidate>
+    {{ comment_form.hidden_tag() }}
+    <div class="mb-2">
+      {{ comment_form.body(class="form-control", rows="4") }}
+      {% for err in comment_form.body.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
+    </div>
+    {{ comment_form.submit(class="btn btn-primary") }}
+  </form>
+  {% else %}
+    <div class="small">请 <a href="{{ url_for('login', next=request.path) }}">登录</a> 后发表评论。</div>
+  {% endif %}
+</div>
 """
 # ----- DB helpers -----
 def get_db():
@@ -360,6 +450,7 @@ def close_db(e=None):
     db = g.pop('db', None)
     if db is not None:
         db.close()
+
 def init_db_if_needed():
     if not os.path.exists(app.config['DATABASE']):
         with sqlite3.connect(app.config['DATABASE']) as conn:
@@ -379,42 +470,121 @@ def current_user():
         return None
     db = get_db()
     return db.execute('SELECT id, username FROM users WHERE id = ?', (uid,)).fetchone()
+
 # ----- Forms -----
 class RegisterForm(FlaskForm):
     username = StringField('用户名', validators=[InputRequired(), Length(min=3, max=50)])
     password = PasswordField('密码', validators=[InputRequired(), Length(min=6, max=128)])
-    submit = SubmitField('注册')
+    submit = SubmitField('Sign up')
 class LoginForm(FlaskForm):
     username = StringField('用户名', validators=[InputRequired(), Length(min=1, max=50)])
     password = PasswordField('密码', validators=[InputRequired(), Length(min=1, max=128)])
     next = HiddenField()
-    submit = SubmitField('登录')
+    submit = SubmitField('Sign in')
 class IssueForm(FlaskForm):
     title = StringField('标题', validators=[InputRequired(), Length(min=1, max=200)])
     body = TextAreaField('正文', validators=[InputRequired(), Length(min=1)])
-    submit = SubmitField('发布')
-
+    submit = SubmitField('Submit new issue')
 class CommentForm(FlaskForm):
     body = TextAreaField('评论', validators=[InputRequired(), Length(min=1)])
-    submit = SubmitField('发表评论')
+    submit = SubmitField('Comment')
+# ----- Utility: LCS (longest common subsequence) -----
+def lcs_length(a: str, b: str) -> int:
+    # 经典 DP 计算 LCS 长度，适用于短文本
+    a = a or ''
+    b = b or ''
+    n, m = len(a), len(b)
+    # 保证空间适中
+    dp = [0] * (m + 1)
+    for i in range(1, n + 1):
+        prev = 0
+        ai = a[i-1]
+        for j in range(1, m + 1):
+            temp = dp[j]
+            if ai == b[j-1]:
+                dp[j] = prev + 1
+            else:
+                dp[j] = dp[j] if dp[j] > dp[j-1] else dp[j-1]
+            prev = temp
+    return dp[m]
+
+# ----- Rendering helper -----
+def render_full_page(title, body_template, **context):
+    body_html = app.jinja_env.from_string(body_template).render(**context)
+    return render_template_string(BASE_HTML, title=title, style_css=STYLE_CSS, body=body_html, **context)
+
 # ----- Routes -----
 @app.route('/')
 def index():
     page = max(1, int(request.args.get('page', 1)))
-    per_page = 10
+    per_page = 12
     offset = (page - 1) * per_page
+    q = request.args.get('q', '').strip()
     db = get_db()
-    total = db.execute('SELECT COUNT(1) FROM issues').fetchone()[0]
-    issues = db.execute('''
+    # SQL: count total matching issues
+    # If q is a simple filter 'is:open' or 'is:closed' we add where clause.
+    where_clauses = []
+    params = []
+    if q:
+        if q == 'is:open':
+            where_clauses.append('issues.is_open = 1')
+        elif q == 'is:closed':
+            where_clauses.append('issues.is_open = 0')
+        else:
+            # For free text, we select all and rank by LCS later.
+            pass
+    where_sql = ('WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
+    # SQL 查询：基础数据拉取（带注释）
+    # 注：这里我们先在 SQL 层做过滤/分页（若 q 为全文搜索，则先取一页候选，再在 Python 层排序）
+    count_sql = f"""
+    -- Count matching issues
+    SELECT COUNT(1)
+    FROM issues
+    JOIN users ON issues.author_id = users.id
+    {where_sql}
+    """
+    total = db.execute(count_sql, tuple(params)).fetchone()[0]
+    fetch_sql = f"""
+    -- Fetch issue rows (basic fields + author)
+    SELECT issues.*, users.username AS author_name
+    FROM issues
+    JOIN users ON issues.author_id = users.id
+    {where_sql}
+    ORDER BY issues.is_open DESC, issues.updated_at DESC
+    LIMIT ? OFFSET ?
+    """
+    rows = db.execute(fetch_sql, tuple(params + [per_page, offset])).fetchall()
+    # 如果传入了自由文本 q（非 is:open/closed），使用 LCS 对 title+body 与 q 计算匹配度并重新排序。
+    issues_with_score = []
+    if q and q not in ('is:open', 'is:closed'):
+        # 先从数据库取更多候选以提高匹配覆盖，取前 200 条
+        fetch_more_sql = f"""
+        -- Fetch candidate issues for LCS ranking (larger window)
         SELECT issues.*, users.username AS author_name
-        FROM issues JOIN users ON issues.author_id = users.id
+        FROM issues
+        JOIN users ON issues.author_id = users.id
         ORDER BY issues.is_open DESC, issues.updated_at DESC
-        LIMIT ? OFFSET ?
-    ''', (per_page, offset)).fetchall()
+        LIMIT 200
+        """
+        candidates = db.execute(fetch_more_sql).fetchall()
+        for r in candidates:
+            text = (r['title'] or '') + "\n" + (r['body'] or '')
+            score = lcs_length(q.lower(), text.lower())
+            issues_with_score.append((r, score))
+        # 按 score 降序，如果 score 相同按 updated_at 降序
+        issues_with_score.sort(key=lambda x: (x[1], x[0]['updated_at']), reverse=True)
+        # 取分页段
+        start = offset
+        end = offset + per_page
+        issues_page = issues_with_score[start:end]
+        total = len(issues_with_score)
+    else:
+        # 将 rows 转成 (issue, score) 形式以便模板兼容（score 为 0 或 1）
+        issues_page = [(r, 1) for r in rows]
     user = current_user()
     last_page = max(1, (total + per_page - 1) // per_page)
-    return render_template_string(INDEX_HTML, base=BASE_HTML, style_css=STYLE_CSS,
-                                  issues=issues, user=user, page=page, last_page=last_page)
+    return render_full_page("Issues · Repo·Mini", INDEX_BODY,
+                            issues=issues_page, user=user, page=page, last_page=last_page, total=total)
 @app.route('/register', methods=('GET', 'POST'))
 def register():
     form = RegisterForm()
@@ -431,8 +601,7 @@ def register():
             db.commit()
             flash('注册成功，请登录。', 'success')
             return redirect(url_for('login'))
-    return render_template_string(REGISTER_HTML, base=BASE_HTML, style_css=STYLE_CSS, form=form, user=current_user())
-
+    return render_full_page("Sign up · Repo·Mini", REGISTER_BODY, form=form, user=current_user())
 @app.route('/login', methods=('GET', 'POST'))
 def login():
     form = LoginForm()
@@ -451,7 +620,7 @@ def login():
             flash('登录成功。', 'success')
             next_url = form.next.data or url_for('index')
             return redirect(next_url)
-    return render_template_string(LOGIN_HTML, base=BASE_HTML, style_css=STYLE_CSS, form=form, user=current_user())
+    return render_full_page("Sign in · Repo·Mini", LOGIN_BODY, form=form, user=current_user())
 @app.route('/logout')
 def logout():
     session.clear()
@@ -461,22 +630,31 @@ def logout():
 @login_required
 def new_issue():
     form = IssueForm()
+    labels = request.form.get('labels', '')
     if form.validate_on_submit():
         db = get_db()
-        db.execute('INSERT INTO issues (title, body, author_id) VALUES (?, ?, ?)',
-                   (form.title.data.strip(), form.body.data.strip(), session['user_id']))
+        insert_sql = """
+        -- Insert new issue
+        INSERT INTO issues (title, body, author_id, labels, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """
+        db.execute(insert_sql, (form.title.data.strip(), form.body.data.strip(), session['user_id'], labels.strip(), datetime.utcnow()))
         db.commit()
-        flash('创建成功。', 'success')
+        flash('Issue created.', 'success')
         return redirect(url_for('index'))
-    return render_template_string(NEW_ISSUE_HTML, base=BASE_HTML, style_css=STYLE_CSS, form=form, user=current_user())
+    return render_full_page("New issue · Repo·Mini", NEW_ISSUE_BODY, form=form, user=current_user(), labels=labels)
 @app.route('/issues/<int:issue_id>', methods=('GET', 'POST'))
 def view_issue(issue_id):
     db = get_db()
-    issue = db.execute('''
-        SELECT issues.*, users.username AS author_name
-        FROM issues JOIN users ON issues.author_id = users.id
-        WHERE issues.id = ?
-    ''', (issue_id,)).fetchone()
+    # SQL: fetch single issue with author
+    issue_sql = """
+    -- Fetch issue by id with author name
+    SELECT issues.*, users.username AS author_name
+    FROM issues
+    JOIN users ON issues.author_id = users.id
+    WHERE issues.id = ?
+    """
+    issue = db.execute(issue_sql, (issue_id,)).fetchone()
     if not issue:
         abort(404)
     comment_form = CommentForm()
@@ -484,53 +662,66 @@ def view_issue(issue_id):
         if 'user_id' not in session:
             flash('请先登录以发表评论。', 'warning')
             return redirect(url_for('login', next=request.path))
-        db.execute('INSERT INTO comments (issue_id, author_id, body) VALUES (?, ?, ?)',
-                   (issue_id, session['user_id'], comment_form.body.data.strip()))
+        insert_comment_sql = """
+        -- Insert comment
+        INSERT INTO comments (issue_id, author_id, body) VALUES (?, ?, ?)
+        """
+        db.execute(insert_comment_sql, (issue_id, session['user_id'], comment_form.body.data.strip()))
         db.execute('UPDATE issues SET updated_at = ? WHERE id = ?', (datetime.utcnow(), issue_id))
         db.commit()
         flash('评论已发布。', 'success')
         return redirect(url_for('view_issue', issue_id=issue_id))
-    comments = db.execute('''
-        SELECT comments.*, users.username AS author_name
-        FROM comments JOIN users ON comments.author_id = users.id
-        WHERE comments.issue_id = ?
-        ORDER BY comments.created_at ASC
-    ''', (issue_id,)).fetchall()
-    return render_template_string(ISSUE_HTML, base=BASE_HTML, style_css=STYLE_CSS,
-                                  issue=issue, comments=comments, user=current_user(), comment_form=comment_form)
+    comments_sql = """
+    -- Fetch comments for issue with author names
+    SELECT comments.*, users.username AS author_name
+    FROM comments
+    JOIN users ON comments.author_id = users.id
+    WHERE comments.issue_id = ?
+    ORDER BY comments.created_at ASC
+    """
+    comments = db.execute(comments_sql, (issue_id,)).fetchall()
+    return render_full_page(issue['title'] + " · Repo·Mini", ISSUE_BODY,
+                            issue=issue, comments=comments, user=current_user(), comment_form=comment_form)
+
 @app.route('/issues/<int:issue_id>/toggle', methods=('POST',))
 @login_required
 def toggle_issue(issue_id):
     db = get_db()
     issue = db.execute('SELECT id, author_id, is_open FROM issues WHERE id = ?', (issue_id,)).fetchone()
-    if not issue: abort(404)
-    if issue['author_id'] != session['user_id']: abort(403)
+    if not issue:
+        abort(404)
+    if issue['author_id'] != session['user_id']:
+        abort(403)
     new_state = 0 if issue['is_open'] else 1
     db.execute('UPDATE issues SET is_open = ?, updated_at = ? WHERE id = ?', (new_state, datetime.utcnow(), issue_id))
     db.commit()
-    flash('已更新状态。', 'success')
+    flash('Issue 状态已更新。', 'success')
     return redirect(url_for('view_issue', issue_id=issue_id))
 @app.route('/issues/<int:issue_id>/delete', methods=('POST',))
 @login_required
 def delete_issue(issue_id):
     db = get_db()
     issue = db.execute('SELECT id, author_id FROM issues WHERE id = ?', (issue_id,)).fetchone()
-    if not issue: abort(404)
-    if issue['author_id'] != session['user_id']: abort(403)
+    if not issue:
+        abort(404)
+    if issue['author_id'] != session['user_id']:
+        abort(403)
     db.execute('DELETE FROM issues WHERE id = ?', (issue_id,))
     db.commit()
-    flash('帖子已删除。', 'info')
+    flash('Issue 已删除。', 'info')
     return redirect(url_for('index'))
 @app.route('/comments/<int:comment_id>/delete', methods=('POST',))
 @login_required
 def delete_comment(comment_id):
     db = get_db()
     comment = db.execute('''
+        -- Fetch comment and its issue author for permission check
         SELECT comments.*, issues.author_id AS issue_author_id
         FROM comments JOIN issues ON comments.issue_id = issues.id
         WHERE comments.id = ?
     ''', (comment_id,)).fetchone()
-    if not comment: abort(404)
+    if not comment:
+        abort(404)
     uid = session['user_id']
     if comment['author_id'] != uid and comment['issue_author_id'] != uid:
         abort(403)
@@ -541,4 +732,4 @@ def delete_comment(comment_id):
 # ----- Start -----
 if __name__ == '__main__':
     init_db_if_needed()
-    app.run(debug=True)
+    app.run(debug=False)
