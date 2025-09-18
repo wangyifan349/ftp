@@ -1,4 +1,3 @@
-# app.py — 单文件 Flask 论坛，GitHub Issue 风格，宽布局，LCS 搜索，SQLite，Flask-WTF
 import os
 import sqlite3
 from datetime import datetime
@@ -9,14 +8,18 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField, TextAreaField, SubmitField, HiddenField
 from wtforms.validators import InputRequired, Length
+
 # ----- Config -----
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE = os.path.join(BASE_DIR, 'forum.db')
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-me')
+
 app = Flask(__name__)
 app.config['DATABASE'] = DATABASE
 app.config['SECRET_KEY'] = SECRET_KEY
-app.config['WTF_CSRF_TIME_LIMIT'] = None  # 方便本地测试
+# disable CSRF token expiration to make local testing easier
+app.config['WTF_CSRF_TIME_LIMIT'] = None
+
 # ----- Schema -----
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -47,7 +50,8 @@ CREATE TABLE IF NOT EXISTS comments (
     FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
 );
 """
-# ----- CSS (更宽、改进视觉) -----
+
+# ----- CSS (visual improvements) -----
 STYLE_CSS = """
 :root{
   --bg: #f6f8fa;
@@ -73,7 +77,7 @@ body{
   box-shadow: 0 1px 0 rgba(0,0,0,0.4);
 }
 .container{
-  max-width: 1600px; /* 更宽 */
+  max-width: 1600px;
   margin: 1.25rem auto;
   padding: 0 1.25rem;
 }
@@ -95,7 +99,6 @@ body{
 .btn-primary { background: var(--accent); color:#fff; border-color:rgba(31,111,235,0.12); }
 .small { font-size:0.86rem; color:var(--muted); }
 
-/* Layout: 更自由铺开 */
 .layout {
   display:flex;
   gap:1.5rem;
@@ -116,7 +119,6 @@ body{
   padding:1rem;
   box-shadow: 0 8px 20px rgba(15,23,42,0.04);
 }
-
 /* Issues list */
 .issue-list { list-style:none; padding:0; margin:0; }
 .issue-item {
@@ -190,8 +192,7 @@ body{
   .sidebar{ width:100%;}
 }
 """
-
-# ----- BASE_HTML (无 blocks) -----
+# ----- BASE_HTML (no Jinja blocks) -----
 BASE_HTML = """
 <!doctype html>
 <html lang="zh-CN">
@@ -247,7 +248,8 @@ BASE_HTML = """
 </body>
 </html>
 """
-# ----- Body templates（简洁美观） -----
+
+# ----- Body templates -----
 INDEX_BODY = """
 <div class="layout">
   <main class="main">
@@ -301,6 +303,7 @@ INDEX_BODY = """
   </main>
 </div>
 """
+
 REGISTER_BODY = """
 <h2>Sign up</h2>
 <form method="post" style="max-width:720px;" novalidate>
@@ -343,6 +346,7 @@ LOGIN_BODY = """
   </div>
 </form>
 """
+
 NEW_ISSUE_BODY = """
 <h2>New issue</h2>
 <form method="post" style="max-width:1000px;" novalidate>
@@ -441,23 +445,26 @@ ISSUE_BODY = """
 """
 # ----- DB helpers -----
 def get_db():
+    """Return a sqlite3 connection stored on flask.g; set row_factory for dict-like access."""
     if 'db' not in g:
         g.db = sqlite3.connect(app.config['DATABASE'], detect_types=sqlite3.PARSE_DECLTYPES)
         g.db.row_factory = sqlite3.Row
     return g.db
 @app.teardown_appcontext
 def close_db(e=None):
+    """Close DB connection at the end of request."""
     db = g.pop('db', None)
     if db is not None:
         db.close()
-
 def init_db_if_needed():
+    """Create database file and schema if it doesn't exist."""
     if not os.path.exists(app.config['DATABASE']):
         with sqlite3.connect(app.config['DATABASE']) as conn:
             conn.executescript(SCHEMA_SQL)
             conn.commit()
 # ----- Auth helpers -----
 def login_required(fn):
+    """Decorator to require login for a route."""
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if 'user_id' not in session:
@@ -465,12 +472,12 @@ def login_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 def current_user():
+    """Return current logged-in user row or None."""
     uid = session.get('user_id')
     if not uid:
         return None
     db = get_db()
     return db.execute('SELECT id, username FROM users WHERE id = ?', (uid,)).fetchone()
-
 # ----- Forms -----
 class RegisterForm(FlaskForm):
     username = StringField('用户名', validators=[InputRequired(), Length(min=3, max=50)])
@@ -490,11 +497,13 @@ class CommentForm(FlaskForm):
     submit = SubmitField('Comment')
 # ----- Utility: LCS (longest common subsequence) -----
 def lcs_length(a: str, b: str) -> int:
-    # 经典 DP 计算 LCS 长度，适用于短文本
+    """Compute LCS length between strings a and b using dynamic programming with O(min(n,m)) space."""
     a = a or ''
     b = b or ''
     n, m = len(a), len(b)
-    # 保证空间适中
+    if n == 0 or m == 0:
+        return 0
+    # ensure m is the smaller dimension to slightly reduce memory (we use m+1 array)
     dp = [0] * (m + 1)
     for i in range(1, n + 1):
         prev = 0
@@ -504,25 +513,29 @@ def lcs_length(a: str, b: str) -> int:
             if ai == b[j-1]:
                 dp[j] = prev + 1
             else:
-                dp[j] = dp[j] if dp[j] > dp[j-1] else dp[j-1]
+                # max(dp[j], dp[j-1])
+                if dp[j] < dp[j-1]:
+                    dp[j] = dp[j-1]
             prev = temp
     return dp[m]
-
 # ----- Rendering helper -----
 def render_full_page(title, body_template, **context):
+    """Render body template into BASE_HTML with style and context."""
+    # render body HTML first
     body_html = app.jinja_env.from_string(body_template).render(**context)
+    # render base with body_html and style
     return render_template_string(BASE_HTML, title=title, style_css=STYLE_CSS, body=body_html, **context)
-
 # ----- Routes -----
 @app.route('/')
 def index():
+    """List issues with optional search. If q is provided and not special 'is:open'/'is:closed',
+    perform client-side ranking using LCS on a candidate window."""
     page = max(1, int(request.args.get('page', 1)))
     per_page = 12
     offset = (page - 1) * per_page
-    q = request.args.get('q', '').strip()
+    q = (request.args.get('q') or '').strip()
     db = get_db()
-    # SQL: count total matching issues
-    # If q is a simple filter 'is:open' or 'is:closed' we add where clause.
+    # build where clause for special filters
     where_clauses = []
     params = []
     if q:
@@ -531,21 +544,19 @@ def index():
         elif q == 'is:closed':
             where_clauses.append('issues.is_open = 0')
         else:
-            # For free text, we select all and rank by LCS later.
+            # free text: do not add SQL filter, we'll rank in Python
             pass
     where_sql = ('WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
-    # SQL 查询：基础数据拉取（带注释）
-    # 注：这里我们先在 SQL 层做过滤/分页（若 q 为全文搜索，则先取一页候选，再在 Python 层排序）
+    # total count
     count_sql = f"""
-    -- Count matching issues
     SELECT COUNT(1)
     FROM issues
     JOIN users ON issues.author_id = users.id
     {where_sql}
     """
     total = db.execute(count_sql, tuple(params)).fetchone()[0]
+    # fetch page candidates (basic)
     fetch_sql = f"""
-    -- Fetch issue rows (basic fields + author)
     SELECT issues.*, users.username AS author_name
     FROM issues
     JOIN users ON issues.author_id = users.id
@@ -554,12 +565,10 @@ def index():
     LIMIT ? OFFSET ?
     """
     rows = db.execute(fetch_sql, tuple(params + [per_page, offset])).fetchall()
-    # 如果传入了自由文本 q（非 is:open/closed），使用 LCS 对 title+body 与 q 计算匹配度并重新排序。
     issues_with_score = []
     if q and q not in ('is:open', 'is:closed'):
-        # 先从数据库取更多候选以提高匹配覆盖，取前 200 条
+        # fetch more candidates to improve ranking coverage
         fetch_more_sql = f"""
-        -- Fetch candidate issues for LCS ranking (larger window)
         SELECT issues.*, users.username AS author_name
         FROM issues
         JOIN users ON issues.author_id = users.id
@@ -571,22 +580,23 @@ def index():
             text = (r['title'] or '') + "\n" + (r['body'] or '')
             score = lcs_length(q.lower(), text.lower())
             issues_with_score.append((r, score))
-        # 按 score 降序，如果 score 相同按 updated_at 降序
+        # sort by score then updated_at
         issues_with_score.sort(key=lambda x: (x[1], x[0]['updated_at']), reverse=True)
-        # 取分页段
+        total = len(issues_with_score)
         start = offset
         end = offset + per_page
         issues_page = issues_with_score[start:end]
-        total = len(issues_with_score)
     else:
-        # 将 rows 转成 (issue, score) 形式以便模板兼容（score 为 0 或 1）
+        # convert rows to (row, score) pairs for template compatibility
         issues_page = [(r, 1) for r in rows]
+
     user = current_user()
     last_page = max(1, (total + per_page - 1) // per_page)
     return render_full_page("Issues · Repo·Mini", INDEX_BODY,
                             issues=issues_page, user=user, page=page, last_page=last_page, total=total)
 @app.route('/register', methods=('GET', 'POST'))
 def register():
+    """User registration route."""
     form = RegisterForm()
     if form.validate_on_submit():
         username = form.username.data.strip()
@@ -604,6 +614,7 @@ def register():
     return render_full_page("Sign up · Repo·Mini", REGISTER_BODY, form=form, user=current_user())
 @app.route('/login', methods=('GET', 'POST'))
 def login():
+    """User login route."""
     form = LoginForm()
     if request.method == 'GET':
         form.next.data = request.args.get('next', '')
@@ -623,32 +634,40 @@ def login():
     return render_full_page("Sign in · Repo·Mini", LOGIN_BODY, form=form, user=current_user())
 @app.route('/logout')
 def logout():
+    """Log out current user."""
     session.clear()
     flash('已登出。', 'info')
     return redirect(url_for('index'))
+# NOTE: decorator must be immediately above function definition (fixed)
 @app.route('/issues/new', methods=('GET', 'POST'))
 @login_required
 def new_issue():
+    """Create a new issue."""
     form = IssueForm()
+    # when rendering GET, request.form will be empty; preserve labels from form submission if any
     labels = request.form.get('labels', '')
     if form.validate_on_submit():
         db = get_db()
         insert_sql = """
-        -- Insert new issue
         INSERT INTO issues (title, body, author_id, labels, updated_at)
         VALUES (?, ?, ?, ?, ?)
         """
-        db.execute(insert_sql, (form.title.data.strip(), form.body.data.strip(), session['user_id'], labels.strip(), datetime.utcnow()))
+        db.execute(insert_sql, (
+            form.title.data.strip(),
+            form.body.data.strip(),
+            session['user_id'],
+            labels.strip(),
+            datetime.utcnow()
+        ))
         db.commit()
         flash('Issue created.', 'success')
         return redirect(url_for('index'))
     return render_full_page("New issue · Repo·Mini", NEW_ISSUE_BODY, form=form, user=current_user(), labels=labels)
 @app.route('/issues/<int:issue_id>', methods=('GET', 'POST'))
 def view_issue(issue_id):
+    """View single issue and handle posting comments."""
     db = get_db()
-    # SQL: fetch single issue with author
     issue_sql = """
-    -- Fetch issue by id with author name
     SELECT issues.*, users.username AS author_name
     FROM issues
     JOIN users ON issues.author_id = users.id
@@ -662,17 +681,13 @@ def view_issue(issue_id):
         if 'user_id' not in session:
             flash('请先登录以发表评论。', 'warning')
             return redirect(url_for('login', next=request.path))
-        insert_comment_sql = """
-        -- Insert comment
-        INSERT INTO comments (issue_id, author_id, body) VALUES (?, ?, ?)
-        """
+        insert_comment_sql = "INSERT INTO comments (issue_id, author_id, body) VALUES (?, ?, ?)"
         db.execute(insert_comment_sql, (issue_id, session['user_id'], comment_form.body.data.strip()))
         db.execute('UPDATE issues SET updated_at = ? WHERE id = ?', (datetime.utcnow(), issue_id))
         db.commit()
         flash('评论已发布。', 'success')
         return redirect(url_for('view_issue', issue_id=issue_id))
     comments_sql = """
-    -- Fetch comments for issue with author names
     SELECT comments.*, users.username AS author_name
     FROM comments
     JOIN users ON comments.author_id = users.id
@@ -682,10 +697,10 @@ def view_issue(issue_id):
     comments = db.execute(comments_sql, (issue_id,)).fetchall()
     return render_full_page(issue['title'] + " · Repo·Mini", ISSUE_BODY,
                             issue=issue, comments=comments, user=current_user(), comment_form=comment_form)
-
 @app.route('/issues/<int:issue_id>/toggle', methods=('POST',))
 @login_required
 def toggle_issue(issue_id):
+    """Toggle issue open/closed. Only the author may toggle."""
     db = get_db()
     issue = db.execute('SELECT id, author_id, is_open FROM issues WHERE id = ?', (issue_id,)).fetchone()
     if not issue:
@@ -700,6 +715,7 @@ def toggle_issue(issue_id):
 @app.route('/issues/<int:issue_id>/delete', methods=('POST',))
 @login_required
 def delete_issue(issue_id):
+    """Delete an issue. Only the author may delete."""
     db = get_db()
     issue = db.execute('SELECT id, author_id FROM issues WHERE id = ?', (issue_id,)).fetchone()
     if not issue:
@@ -713,9 +729,9 @@ def delete_issue(issue_id):
 @app.route('/comments/<int:comment_id>/delete', methods=('POST',))
 @login_required
 def delete_comment(comment_id):
+    """Delete a comment. Allowed for comment author or issue author."""
     db = get_db()
     comment = db.execute('''
-        -- Fetch comment and its issue author for permission check
         SELECT comments.*, issues.author_id AS issue_author_id
         FROM comments JOIN issues ON comments.issue_id = issues.id
         WHERE comments.id = ?
@@ -729,7 +745,9 @@ def delete_comment(comment_id):
     db.commit()
     flash('评论已删除。', 'info')
     return redirect(url_for('view_issue', issue_id=comment['issue_id']))
-# ----- Start -----
+# ----- Start server -----
 if __name__ == '__main__':
+    # ensure DB exists with schema
     init_db_if_needed()
+    # run Flask app
     app.run(debug=False)
