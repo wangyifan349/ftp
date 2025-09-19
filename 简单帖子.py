@@ -1,4 +1,3 @@
-# app.py
 from flask import Flask, g, render_template_string, request, redirect, url_for, flash, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
@@ -25,11 +24,11 @@ def query(sql, args=(), one=False, commit=False):
         db.commit()
         cur.close()
         return None
-    rv = cur.fetchall()
+    rows = cur.fetchall()
     cur.close()
     if one:
-        return rv[0] if rv else None
-    return rv
+        return rows[0] if rows else None
+    return rows
 @app.teardown_appcontext
 def close_connection(exception):
     db = getattr(g, '_database', None)
@@ -69,18 +68,25 @@ def init_db():
     """)
     db.commit()
     db.close()
+
 # ---------- User class for Flask-Login ----------
 class SimpleUser(UserMixin):
     def __init__(self, id_, username):
         self.id = id_
         self.username = username
+
 @login_manager.user_loader
 def load_user(user_id):
-    row = query("SELECT id, username FROM user WHERE id = ?", (int(user_id),), one=True)
-    if not row:
+    try:
+        uid = int(user_id)
+    except Exception:
         return None
-    return SimpleUser(row['id'], row['username'])
-# ---------- Templates (single-file, Jinja2 templates as strings) ----------
+    user_row = query("SELECT id, username FROM user WHERE id = ?", (uid,), one=True)
+    if not user_row:
+        return None
+    return SimpleUser(user_row['id'], user_row['username'])
+
+# ---------- Templates ----------
 base_tpl = """
 <!doctype html>
 <html lang="zh-CN">
@@ -175,7 +181,7 @@ auth_tpl = """
 issue_view_tpl = """
 <div class="mb-3">
   <a class="btn btn-light btn-sm" href="{{ url_for('list_issues') }}">&larr; 返回</a>
-  {% if current_user.is_authenticated and current_user.id == issue.author_id %}
+  {% if current_user.is_authenticated and (current_user.id | int) == (issue.author_id | int) %}
     <a class="btn btn-outline-primary btn-sm" href="{{ url_for('edit_issue', issue_id=issue.id) }}">编辑</a>
     <a class="btn btn-outline-danger btn-sm" href="{{ url_for('delete_issue', issue_id=issue.id) }}" onclick="return confirm('删除本 Issue？')">删除</a>
   {% endif %}
@@ -197,7 +203,7 @@ issue_view_tpl = """
       <div class="card-body">
         <h6 class="card-subtitle mb-2 text-muted">{{ c.author_name }} · {{ c.created_at }}</h6>
         <p class="card-text">{{ c.body }}</p>
-        {% if current_user.is_authenticated and current_user.id == c.author_id %}
+        {% if current_user.is_authenticated and (current_user.id | int) == (c.author_id | int) %}
           <a class="btn btn-sm btn-outline-primary" href="{{ url_for('edit_comment', comment_id=c.id) }}">编辑</a>
           <a class="btn btn-sm btn-outline-danger" href="{{ url_for('delete_comment', comment_id=c.id) }}" onclick="return confirm('删除本评论？')">删除</a>
         {% endif %}
@@ -291,8 +297,8 @@ def list_issues():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form.get('username','').strip()
-        password = request.form.get('password','')
+        username = (request.form.get('username') or '').strip()
+        password = request.form.get('password') or ''
         if not username or not password:
             flash('用户名和密码不能为空')
             return redirect(url_for('register'))
@@ -302,8 +308,8 @@ def register():
             return redirect(url_for('register'))
         pw_hash = generate_password_hash(password)
         query("INSERT INTO user (username, password_hash) VALUES (?, ?)", (username, pw_hash), commit=True)
-        row = query("SELECT id, username FROM user WHERE username = ?", (username,), one=True)
-        user = SimpleUser(row['id'], row['username'])
+        user_row = query("SELECT id, username FROM user WHERE username = ?", (username,), one=True)
+        user = SimpleUser(int(user_row['id']), user_row['username'])
         login_user(user)
         return redirect(url_for('list_issues'))
     body = render_template_string(auth_tpl, title='注册', btn_text='注册', username='')
@@ -311,13 +317,13 @@ def register():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form.get('username','').strip()
-        password = request.form.get('password','')
-        row = query("SELECT id, username, password_hash FROM user WHERE username = ?", (username,), one=True)
-        if not row or not check_password_hash(row['password_hash'], password):
+        username = (request.form.get('username') or '').strip()
+        password = request.form.get('password') or ''
+        user_row = query("SELECT id, username, password_hash FROM user WHERE username = ?", (username,), one=True)
+        if not user_row or not check_password_hash(user_row['password_hash'], password):
             flash('用户名或密码错误')
             return redirect(url_for('login'))
-        user = SimpleUser(row['id'], row['username'])
+        user = SimpleUser(int(user_row['id']), user_row['username'])
         login_user(user)
         return redirect(url_for('list_issues'))
     body = render_template_string(auth_tpl, title='登录', btn_text='登录')
@@ -331,25 +337,26 @@ def logout():
 @login_required
 def new_issue():
     if request.method == 'POST':
-        title = request.form.get('title','').strip()
-        body_text = request.form.get('body','').strip()
+        title = (request.form.get('title') or '').strip()
+        body_text = (request.form.get('body') or '').strip()
         if not title:
             flash('标题不能为空')
             return redirect(url_for('new_issue'))
         query("INSERT INTO issue (title, body, author_id) VALUES (?, ?, ?)",
               (title, body_text, int(current_user.id)), commit=True)
-        last = query("SELECT id FROM issue ORDER BY id DESC LIMIT 1", one=True)
-        return redirect(url_for('view_issue', issue_id=last['id']))
+        last_row = query("SELECT id FROM issue ORDER BY id DESC LIMIT 1", one=True)
+        issue_id = int(last_row['id'])
+        return redirect(url_for('view_issue', issue_id=issue_id))
     body = render_template_string(issue_form_tpl, title='创建 Issue', btn_text='创建', issue={})
     return render_template_string(base_tpl, body=body)
 @app.route('/issues/<int:issue_id>')
 def view_issue(issue_id):
-    it = query("""
+    issue_row = query("""
       SELECT issue.*, user.username AS author_name
       FROM issue JOIN user ON issue.author_id = user.id
       WHERE issue.id = ?
     """, (issue_id,), one=True)
-    if not it:
+    if not issue_row:
         abort(404)
     comments_rows = query("""
       SELECT comment.*, user.username AS author_name
@@ -366,56 +373,55 @@ def view_issue(issue_id):
             'author_name': c['author_name'],
             'created_at': c['created_at']
         })
-    issue = {
-        'id': it['id'],
-        'title': it['title'],
-        'body': it['body'],
-        'author_id': it['author_id'],
-        'author_name': it['author_name'],
-        'created_at': it['created_at']
+    issue_dict = {
+        'id': issue_row['id'],
+        'title': issue_row['title'],
+        'body': issue_row['body'],
+        'author_id': issue_row['author_id'],
+        'author_name': issue_row['author_name'],
+        'created_at': issue_row['created_at']
     }
-    body = render_template_string(issue_view_tpl, issue=issue, comments=comments)
+    body = render_template_string(issue_view_tpl, issue=issue_dict, comments=comments)
     return render_template_string(base_tpl, body=body)
 @app.route('/issues/<int:issue_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_issue(issue_id):
-    it = query("SELECT * FROM issue WHERE id = ?", (issue_id,), one=True)
-    if not it:
+    issue_row = query("SELECT * FROM issue WHERE id = ?", (issue_id,), one=True)
+    if not issue_row:
         abort(404)
-    if int(it['author_id']) != int(current_user.id):
+    if int(issue_row['author_id']) != int(current_user.id):
         abort(403)
     if request.method == 'POST':
-        title = request.form.get('title','').strip()
-        body_text = request.form.get('body','').strip()
+        title = (request.form.get('title') or '').strip()
+        body_text = (request.form.get('body') or '').strip()
         if not title:
             flash('标题不能为空')
             return redirect(url_for('edit_issue', issue_id=issue_id))
         query("UPDATE issue SET title = ?, body = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
               (title, body_text, issue_id), commit=True)
         return redirect(url_for('view_issue', issue_id=issue_id))
-    issue = {'title': it['title'], 'body': it['body'] or ''}
+    issue = {'title': issue_row['title'], 'body': issue_row['body'] or ''}
     body = render_template_string(issue_form_tpl, title='编辑 Issue', btn_text='保存', issue=issue)
     return render_template_string(base_tpl, body=body)
 @app.route('/issues/<int:issue_id>/delete')
 @login_required
 def delete_issue(issue_id):
-    it = query("SELECT author_id FROM issue WHERE id = ?", (issue_id,), one=True)
-    if not it:
+    issue_row = query("SELECT author_id FROM issue WHERE id = ?", (issue_id,), one=True)
+    if not issue_row:
         abort(404)
-    if int(it['author_id']) != int(current_user.id):
+    if int(issue_row['author_id']) != int(current_user.id):
         abort(403)
     # delete comments first due to FK
     query("DELETE FROM comment WHERE issue_id = ?", (issue_id,), commit=True)
     query("DELETE FROM issue WHERE id = ?", (issue_id,), commit=True)
     return redirect(url_for('list_issues'))
-
 @app.route('/issues/<int:issue_id>/comments', methods=['POST'])
 @login_required
 def add_comment(issue_id):
-    it = query("SELECT id FROM issue WHERE id = ?", (issue_id,), one=True)
-    if not it:
+    issue_row = query("SELECT id FROM issue WHERE id = ?", (issue_id,), one=True)
+    if not issue_row:
         abort(404)
-    body_text = request.form.get('body','').strip()
+    body_text = (request.form.get('body') or '').strip()
     if not body_text:
         flash('评论不能为空')
         return redirect(url_for('view_issue', issue_id=issue_id))
@@ -425,31 +431,31 @@ def add_comment(issue_id):
 @app.route('/comments/<int:comment_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_comment(comment_id):
-    c = query("SELECT * FROM comment WHERE id = ?", (comment_id,), one=True)
-    if not c:
+    comment_row = query("SELECT * FROM comment WHERE id = ?", (comment_id,), one=True)
+    if not comment_row:
         abort(404)
-    if int(c['author_id']) != int(current_user.id):
+    if int(comment_row['author_id']) != int(current_user.id):
         abort(403)
     if request.method == 'POST':
-        body_text = request.form.get('body','').strip()
+        body_text = (request.form.get('body') or '').strip()
         if not body_text:
             flash('评论不能为空')
             return redirect(url_for('edit_comment', comment_id=comment_id))
         query("UPDATE comment SET body = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
               (body_text, comment_id), commit=True)
-        return redirect(url_for('view_issue', issue_id=c['issue_id']))
-    comment = {'body': c['body']}
+        return redirect(url_for('view_issue', issue_id=comment_row['issue_id']))
+    comment = {'body': comment_row['body']}
     body = render_template_string(comment_form_tpl, comment=comment)
     return render_template_string(base_tpl, body=body)
 @app.route('/comments/<int:comment_id>/delete')
 @login_required
 def delete_comment(comment_id):
-    c = query("SELECT * FROM comment WHERE id = ?", (comment_id,), one=True)
-    if not c:
+    comment_row = query("SELECT * FROM comment WHERE id = ?", (comment_id,), one=True)
+    if not comment_row:
         abort(404)
-    if int(c['author_id']) != int(current_user.id):
+    if int(comment_row['author_id']) != int(current_user.id):
         abort(403)
-    issue_id = c['issue_id']
+    issue_id = comment_row['issue_id']
     query("DELETE FROM comment WHERE id = ?", (comment_id,), commit=True)
     return redirect(url_for('view_issue', issue_id=issue_id))
 # ---------- Error handlers ----------
