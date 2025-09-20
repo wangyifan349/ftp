@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 可配置项
+USER_NAME="${SUDO_USER:-$(whoami)}"
+SSH_PUBKEY_PATH="$HOME/.ssh/id_rsa.pub"
+SSH_DIR="/home/${USER_NAME}/.ssh"
+
+echo "Running as user: $USER_NAME"
+
+# 1. 更新与基础
+apt update
+apt -y upgrade
+apt -y install --no-install-recommends software-properties-common
+# 2. 常用命令行工具
+apt -y install curl wget git ca-certificates gnupg apt-transport-https
+# 3. 开发工具与 C 语言工具链
+apt -y install build-essential gcc g++ make autoconf automake pkg-config cmake gdb valgrind
+# 4. 包管理与语言环境（python、node）
+apt -y install python3 python3-venv python3-pip nodejs npm
+# 5. 压缩/归档与打包工具
+apt -y install tar gzip bzip2 unzip xz-utils p7zip-full
+# 6. 版本控制与协作工具（git 已包含），并设置常用全局配置示例
+git config --global core.editor "vim"
+git config --global user.name "${USER_NAME}"
+git config --global init.defaultBranch main
+# 7. SSH：生成密钥（若不存在），并提示添加公钥到 authorized_keys
+apt -y install openssh-client openssh-server
+# 确保 SSH 目录存在并权限正确
+mkdir -p "${SSH_DIR}"
+chown "${USER_NAME}:${USER_NAME}" "${SSH_DIR}"
+chmod 700 "${SSH_DIR}"
+# 7a. 生成 ed25519 密钥（若无）
+if [ ! -f "${SSH_DIR}/id_ed25519" ]; then
+  sudo -u "${USER_NAME}" ssh-keygen -t ed25519 -f "${SSH_DIR}/id_ed25519" -N "" -C "${USER_NAME}@$(hostname)" || true
+  chown "${USER_NAME}:${USER_NAME}" "${SSH_DIR}/id_ed25519" "${SSH_DIR}/id_ed25519.pub"
+  chmod 600 "${SSH_DIR}/id_ed25519" "${SSH_DIR}/id_ed25519.pub"
+fi
+# 7b. 将公钥加入 authorized_keys（若未加入）
+if ! grep -qxF "$(cat "${SSH_DIR}/id_ed25519.pub")" "${SSH_DIR}/authorized_keys" 2>/dev/null; then
+  cat "${SSH_DIR}/id_ed25519.pub" >> "${SSH_DIR}/authorized_keys"
+  chown "${USER_NAME}:${USER_NAME}" "${SSH_DIR}/authorized_keys"
+  chmod 600 "${SSH_DIR}/authorized_keys"
+fi
+# 8. GUI/外观/字体管理相关
+apt -y install fontconfig fonts-noto-core fonts-noto-cjk fonts-liberation \
+  font-manager fonts-dejavu-core
+# 9. GNOME/KDE 调整工具（按桌面环境选择）
+apt -y install gnome-tweaks dconf-editor gnome-control-center
+apt -y install kde-config-gtk-style plasma-desktop --no-install-recommends || true
+# 10. 显示/缩放/分辨率工具
+apt -y install arandr xrandr
+# 11. 字体渲染/优化工具与实用程序
+apt -y install fonthint ttf-mscorefonts-installer
+# 12. 截图与屏幕录制
+apt -y install flameshot gnome-screenshot simplescreenrecorder
+# 13. 终端与 shell 工具
+apt -y install terminator tilix tmux zsh fish
+# 可选：将 zsh 设为默认 shell（取消注释如果需要）
+# chsh -s "$(which zsh)" "${USER_NAME}"
+# 14. 编辑器与 IDE（轻量与常用）
+apt -y install vim nano emacs
+# 可选：安装 VS Code repo（官方）
+if ! command -v code >/dev/null 2>&1; then
+  curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /usr/share/keyrings/vscode.gpg
+  echo "deb [signed-by=/usr/share/keyrings/vscode.gpg] https://packages.microsoft.com/repos/code stable main" \
+    > /etc/apt/sources.list.d/vscode.list
+  apt update
+  apt -y install code || true
+fi
+# 15. 浏览器与网络工具
+apt -y install firefox-esr
+apt -y install curl wget net-tools iproute2 iputils-ping dnsutils traceroute
+# 16. 网络安全与传输工具
+apt -y install openssh-client openssh-server rsync scp s3cmd
+apt -y install ufw fail2ban
+# 17. 容器与虚拟化常用工具
+apt -y install docker.io snapd
+# 启用 docker 服务并允许当前用户使用（添加到 docker 组）
+systemctl enable --now docker || true
+usermod -aG docker "${USER_NAME}" || true
+# 18. 日志与 systemd 管理工具
+apt -y install htop atop btop
+apt -y install systemd-sysv
+# 19. 媒体与图像工具
+apt -y install vlc gimp imagemagick
+# 20. 开发辅助工具（包管理、certs、构建依赖）
+apt -y install build-essential libssl-dev libffi-dev cmake ccache pkg-config
+# 21. 邮件与证书工具
+apt -y install ca-certificates openssl gnupg2 certbot
+# 22. 清理与信息
+apt -y autoremove -y
+apt -y autoclean
+
+
+sudo apt update && sudo apt -y install openssl gnutls-bin libssl-dev libgcrypt20-dev libgnutls28-dev gpg gpg-agent rng-tools haveged mbedtls-tools libmbedtls-dev libsodium-dev libsodium23 hashcat john netcat bc bc-gui pari-gp gp gp2c maxima octave python3 python3-pip python3-venv python3-numpy python3-scipy python3-sympy r-base r-base-core libgmp-dev libmpfr-dev libflint-dev && python3 - <<'PY'\nimport hashlib,sys\nprint('openssl version:', import('subprocess').run(['openssl','version'],capture_output=True,text=True).stdout.strip())\nprint('gpg --version:', import('subprocess').run(['gpg','--version'],capture_output=True,text=True).stdout.splitlines()[0])\nPY
+
+
+echo
+echo "安装完成。注意事项："
+echo "- 若更改了用户组（如 docker），请重新登录以使组权限生效。"
+echo "- 字体和外观更改可能需要注销/重启会话。"
+echo "- SSH 公钥已生成并添加到 authorized_keys（路径：${SSH_DIR}/authorized_keys）。"
+echo "- 如需调整为非 Debian/Ubuntu 发行版，请替换包管理器命令与包名。"
