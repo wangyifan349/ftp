@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# 完整的 Flask 应用：云端记事本（支持可选图片、编辑时删除图片、详情页空白处理）
+# 日期：2025-09-22
+# 运行：python thisfile.py
+# 注意：生产环境请使用 WSGI 容器并设置安全 secret key 与数据库路径等
+
 import os
 import base64
 import sqlite3
@@ -8,7 +15,6 @@ from flask import (
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from io import BytesIO
-
 # Configuration
 DATABASE = os.environ.get("NOTES_DB_PATH", "notes.db")
 MAX_CONTENT_LENGTH = 4 * 1024 * 1024  # 4 MB
@@ -16,7 +22,6 @@ ALLOWED_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change_me_in_prod")
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
-
 # --- Database helpers ---
 def get_db_connection():
     if "db" not in g:
@@ -24,13 +29,11 @@ def get_db_connection():
         conn.row_factory = sqlite3.Row
         g.db = conn
     return g.db
-
 @app.teardown_appcontext
 def close_db_connection(exception):
     db = g.pop("db", None)
     if db is not None:
         db.close()
-
 def init_db():
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
@@ -52,11 +55,9 @@ def init_db():
     )""")
     conn.commit()
     conn.close()
-
 @app.before_first_request
 def ensure_db():
     init_db()
-
 # --- Utilities ---
 def allowed_image_filename(filename: str) -> bool:
     if not filename:
@@ -191,7 +192,6 @@ def logout():
     session.clear()
     flash("已退出登录", "info")
     return redirect(url_for("login"))
-
 @app.route("/notes", methods=["GET", "POST"])
 def note_list():
     if "user_id" not in session:
@@ -253,7 +253,6 @@ def note_list():
 {% endwith %}
 """ + get_bootstrap_footer(), notes=notes, search_info=search_info)
     return page_html
-
 @app.route("/create_note", methods=["GET", "POST"])
 def create_note():
     if "user_id" not in session:
@@ -302,6 +301,7 @@ def create_note():
  <div class="mb-3">
   <label class="form-label">图片上传（可选）</label>
   <input type="file" class="form-control" name="image_file" accept="image/*">
+  <div class="form-text">不上传图片则该笔记不会包含图片，详情页显示为空白。</div>
  </div>
  <button type="submit" class="btn btn-primary">保存</button>
 </form>
@@ -318,7 +318,6 @@ def create_note():
 {% endwith %}
 """ + get_bootstrap_footer())
     return page_html
-
 @app.route("/note/<int:note_id>")
 def note_detail(note_id):
     if "user_id" not in session:
@@ -334,7 +333,10 @@ def note_detail(note_id):
     image_base64 = None
     image_mime = note["image_mime"] or "image/jpeg"
     if note["image"]:
-        image_base64 = base64.b64encode(note["image"]).decode("utf-8")
+        try:
+            image_base64 = base64.b64encode(note["image"]).decode("utf-8")
+        except Exception:
+            image_base64 = None
     page_html = render_template_string(get_bootstrap_header("笔记详情") + """
 <h1>笔记详情</h1>
 <div class="card mb-3">
@@ -343,6 +345,9 @@ def note_detail(note_id):
   <p class="card-text">{{ note['content'] }}</p>
   {% if image_base64 %}
   <img src="data:{{ image_mime }};base64,{{ image_base64 }}" alt="笔记图片" class="img-fluid mt-3">
+  {% else %}
+  <!-- 详情页保持空白（没有图片时不渲染 img） -->
+  <div class="mt-3 text-muted">（无图片）</div>
   {% endif %}
  </div>
 </div>
@@ -359,7 +364,6 @@ def note_detail(note_id):
 {% endwith %}
 """ + get_bootstrap_footer(), note=note, image_base64=image_base64, image_mime=image_mime)
     return page_html
-
 @app.route("/note/<int:note_id>/edit", methods=["GET", "POST"])
 def edit_note(note_id):
     if "user_id" not in session:
@@ -375,6 +379,7 @@ def edit_note(note_id):
     if request.method == "POST":
         title = request.form.get("title", "").strip()
         content = request.form.get("content", "").strip()
+        remove_image = request.form.get("remove_image") == "on"
         image_file = request.files.get("image_file")
         if not title:
             flash("笔记标题不能为空", "warning")
@@ -392,6 +397,10 @@ def edit_note(note_id):
                 return redirect(url_for("edit_note", note_id=note_id))
             image_data = image_bytes
             image_mime = image_file.mimetype or image_mime or "application/octet-stream"
+            remove_image = False
+        if remove_image:
+            image_data = None
+            image_mime = None
         cur.execute(
             "UPDATE notes SET title = ?, content = ?, image = ?, image_mime = ? WHERE id = ? AND user_id = ?",
             (title, content, image_data, image_mime, note_id, session["user_id"])
@@ -401,7 +410,10 @@ def edit_note(note_id):
         return redirect(url_for("note_detail", note_id=note_id))
     image_base64 = None
     if note["image"]:
-        image_base64 = base64.b64encode(note["image"]).decode("utf-8")
+        try:
+            image_base64 = base64.b64encode(note["image"]).decode("utf-8")
+        except Exception:
+            image_base64 = None
     page_html = render_template_string(get_bootstrap_header("编辑笔记") + """
 <h1>编辑笔记</h1>
 <form method="POST" enctype="multipart/form-data" action="{{ url_for('edit_note', note_id=note['id']) }}">
@@ -414,15 +426,23 @@ def edit_note(note_id):
   <textarea name="content" class="form-control" rows="5">{{ note['content'] }}</textarea>
  </div>
  <div class="mb-3">
-  <label class="form-label">图片（上传新图片将替换旧图）</label>
+  <label class="form-label">上传新图片（可选，上传后会替换当前图片）</label>
   <input type="file" class="form-control" name="image_file" accept="image/*">
- </div>
+</div>
+
 {% if image_base64 %}
 <div class="mb-3">
  <label class="form-label">当前图片预览</label>
  <div><img src="data:{{ note['image_mime'] or 'image/jpeg' }};base64,{{ image_base64 }}" class="img-fluid" alt="当前图片"></div>
 </div>
+<div class="form-check mb-3">
+  <input class="form-check-input" type="checkbox" id="removeImage" name="remove_image">
+  <label class="form-check-label" for="removeImage">删除当前图片</label>
+</div>
+{% else %}
+<p class="text-muted">当前没有图片（页面保持为空白）</p>
 {% endif %}
+
  <button type="submit" class="btn btn-primary">保存更改</button>
  <a href="{{ url_for('note_detail', note_id=note['id']) }}" class="btn btn-secondary ms-2">取消</a>
 </form>
@@ -438,7 +458,6 @@ def edit_note(note_id):
 {% endwith %}
 """ + get_bootstrap_footer(), note=note, image_base64=image_base64)
     return page_html
-
 @app.route("/note/<int:note_id>/image")
 def note_image(note_id):
     """Optional: serve raw image bytes (safer for large images)"""
@@ -454,7 +473,6 @@ def note_image(note_id):
         return redirect(url_for("note_detail", note_id=note_id))
     mime = row["image_mime"] or "application/octet-stream"
     return send_file(BytesIO(row["image"]), mimetype=mime, download_name=f"note_{note_id}_image", as_attachment=False)
-
 # --- Main ---
 if __name__ == "__main__":
     # For production, use a WSGI server (gunicorn/uwsgi). Debug only for local dev.
