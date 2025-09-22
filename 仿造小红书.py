@@ -1,25 +1,71 @@
 import os
+import base64
 import sqlite3
-from flask import Flask, request, redirect, url_for, session, flash, render_template_string
+from flask import (
+    Flask, request, redirect, url_for, session, flash,
+    render_template_string, g, send_file
+)
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+from io import BytesIO
+
+# Configuration
+DATABASE = os.environ.get("NOTES_DB_PATH", "notes.db")
+MAX_CONTENT_LENGTH = 4 * 1024 * 1024  # 4 MB
+ALLOWED_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
 app = Flask(__name__)
-app.secret_key = 'your_secret_key'
-DATABASE = 'notes.db'
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change_me_in_prod")
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+
+# --- Database helpers ---
+def get_db_connection():
+    if "db" not in g:
+        conn = sqlite3.connect(DATABASE)
+        conn.row_factory = sqlite3.Row
+        g.db = conn
+    return g.db
+
+@app.teardown_appcontext
+def close_db_connection(exception):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
 def init_db():
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
-    cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL)')
-    cur.execute('CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,title TEXT NOT NULL,content TEXT NOT NULL,image BLOB,FOREIGN KEY(user_id) REFERENCES users(id))')
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL
+    )""")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      image BLOB,
+      image_mime TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    )""")
     conn.commit()
     conn.close()
+
 @app.before_first_request
-def before_first_request_func():
+def ensure_db():
     init_db()
-def get_db_connection():
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    return conn
+
+# --- Utilities ---
+def allowed_image_filename(filename: str) -> bool:
+    if not filename:
+        return False
+    name = filename.rsplit(".", 1)
+    if len(name) != 2:
+        return False
+    return name[1].lower() in ALLOWED_IMAGE_EXTENSIONS
+
 def get_bootstrap_header(title="云端记事本"):
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -39,34 +85,33 @@ def get_bootstrap_footer():
 </body>
 </html>
 """
-@app.route('/')
+
+# --- Routes ---
+@app.route("/")
 def index():
-    if 'user_id' in session:
-        return redirect(url_for('note_list'))
-    else:
-        return redirect(url_for('login'))
-@app.route('/register', methods=['GET', 'POST'])
+    if "user_id" in session:
+        return redirect(url_for("note_list"))
+    return redirect(url_for("login"))
+
+@app.route("/register", methods=["GET", "POST"])
 def register():
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '').strip()
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
         if not username or not password:
             flash("用户名或密码不能为空", "warning")
-            return redirect(url_for('register'))
+            return redirect(url_for("register"))
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE username=?", (username,))
-        row = cur.fetchone()
-        if row:
-            conn.close()
+        cur.execute("SELECT id FROM users WHERE username = ?", (username,))
+        if cur.fetchone():
             flash("该用户名已被占用，请换一个试试", "warning")
-            return redirect(url_for('register'))
+            return redirect(url_for("register"))
         password_hash = generate_password_hash(password)
-        cur.execute("INSERT INTO users (username,password_hash) VALUES (?,?)", (username, password_hash))
+        cur.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", (username, password_hash))
         conn.commit()
-        conn.close()
         flash("注册成功，请登录", "success")
-        return redirect(url_for('login'))
+        return redirect(url_for("login"))
     page_html = render_template_string(get_bootstrap_header("注册") + """
 <h1>注册</h1>
 <form method="POST" action="{{ url_for('register') }}">
@@ -82,7 +127,7 @@ def register():
 </form>
 <hr>
 <p>已有帐号？<a href="{{ url_for('login') }}">点此登录</a></p>
-{% with messages = get_flashed_messages(category_filter=['warning','success','error']) %}
+{% with messages = get_flashed_messages(category_filter=['warning','success','info','error']) %}
  {% if messages %}
  <ul class="mt-3 alert alert-info">
   {% for msg in messages %}
@@ -93,30 +138,27 @@ def register():
 {% endwith %}
 """ + get_bootstrap_footer())
     return page_html
-@app.route('/login', methods=['GET', 'POST'])
+
+@app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '').strip()
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
         if not username or not password:
             flash("用户名或密码不能为空", "warning")
-            return redirect(url_for('login'))
+            return redirect(url_for("login"))
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id,password_hash FROM users WHERE username=?", (username,))
+        cur.execute("SELECT id, password_hash FROM users WHERE username = ?", (username,))
         user = cur.fetchone()
-        conn.close()
-        if not user:
+        if not user or not check_password_hash(user["password_hash"], password):
             flash("用户不存在或密码错误", "warning")
-            return redirect(url_for('login'))
-        if check_password_hash(user['password_hash'], password):
-            session['user_id'] = user['id']
-            session['username'] = username
-            flash("登录成功", "success")
-            return redirect(url_for('note_list'))
-        else:
-            flash("用户不存在或密码错误", "warning")
-            return redirect(url_for('login'))
+            return redirect(url_for("login"))
+        session.clear()
+        session["user_id"] = user["id"]
+        session["username"] = username
+        flash("登录成功", "success")
+        return redirect(url_for("note_list"))
     page_html = render_template_string(get_bootstrap_header("登录") + """
 <h1>登录</h1>
 <form method="POST" action="{{ url_for('login') }}">
@@ -132,7 +174,7 @@ def login():
 </form>
 <hr>
 <p>没有帐号？<a href="{{ url_for('register') }}">点此注册</a></p>
-{% with messages = get_flashed_messages(category_filter=['warning','success','error']) %}
+{% with messages = get_flashed_messages(category_filter=['warning','success','info','error']) %}
  {% if messages %}
  <ul class="mt-3 alert alert-danger">
   {% for msg in messages %}
@@ -143,29 +185,33 @@ def login():
 {% endwith %}
 """ + get_bootstrap_footer())
     return page_html
-@app.route('/logout')
+
+@app.route("/logout")
 def logout():
     session.clear()
     flash("已退出登录", "info")
-    return redirect(url_for('login'))
-@app.route('/notes', methods=['GET', 'POST'])
+    return redirect(url_for("login"))
+
+@app.route("/notes", methods=["GET", "POST"])
 def note_list():
-    if 'user_id' not in session:
+    if "user_id" not in session:
         flash("请先登录", "warning")
-        return redirect(url_for('login'))
-    user_id = session['user_id']
+        return redirect(url_for("login"))
+    user_id = session["user_id"]
     conn = get_db_connection()
     cur = conn.cursor()
-    if request.method == 'POST':
-        keyword = request.form.get('keyword', '').strip()
-        cur.execute("SELECT id,title,content FROM notes WHERE user_id=? AND title LIKE ? ORDER BY id DESC", (user_id, f"%{keyword}%"))
+    if request.method == "POST":
+        keyword = request.form.get("keyword", "").strip()
+        cur.execute(
+            "SELECT id, title, content FROM notes WHERE user_id = ? AND title LIKE ? ORDER BY id DESC",
+            (user_id, f"%{keyword}%")
+        )
         notes = cur.fetchall()
         search_info = f"搜索标题包含“{keyword}”的笔记"
     else:
-        cur.execute("SELECT id,title,content FROM notes WHERE user_id=? ORDER BY id DESC", (user_id,))
+        cur.execute("SELECT id, title, content FROM notes WHERE user_id = ? ORDER BY id DESC", (user_id,))
         notes = cur.fetchall()
         search_info = None
-    conn.close()
     page_html = render_template_string(get_bootstrap_header("我的笔记") + """
 <h1>我的笔记</h1>
 <div class="mb-2">
@@ -191,7 +237,7 @@ def note_list():
 <ul class="list-group">
 {% for note in notes %}
 <li class="list-group-item">
- <a href="{{ url_for('note_detail',note_id=note['id']) }}" class="fw-bold">{{ note['title'] }}</a>
+ <a href="{{ url_for('note_detail', note_id=note['id']) }}" class="fw-bold">{{ note['title'] }}</a>
  <p class="mb-0 text-muted">{{ note['content'][:30] }}{% if note['content']|length > 30 %}...{% endif %}</p>
 </li>
 {% endfor %}
@@ -207,30 +253,41 @@ def note_list():
 {% endwith %}
 """ + get_bootstrap_footer(), notes=notes, search_info=search_info)
     return page_html
-@app.route('/create_note', methods=['GET', 'POST'])
+
+@app.route("/create_note", methods=["GET", "POST"])
 def create_note():
-    if 'user_id' not in session:
+    if "user_id" not in session:
         flash("请先登录", "warning")
-        return redirect(url_for('login'))
-    if request.method == 'POST':
-        title = request.form.get('title', '').strip()
-        content = request.form.get('content', '').strip()
-        image_file = request.files.get('image_file', None)
+        return redirect(url_for("login"))
+    if request.method == "POST":
+        title = request.form.get("title", "").strip()
+        content = request.form.get("content", "").strip()
+        image_file = request.files.get("image_file")
         if not title:
             flash("笔记标题不能为空", "warning")
-            return redirect(url_for('create_note'))
-        user_id = session['user_id']
+            return redirect(url_for("create_note"))
         image_data = None
+        image_mime = None
         if image_file and image_file.filename:
             filename = secure_filename(image_file.filename)
-            image_data = image_file.read()
+            if not allowed_image_filename(filename):
+                flash("不支持的图片类型", "warning")
+                return redirect(url_for("create_note"))
+            image_bytes = image_file.read()
+            if not image_bytes:
+                flash("上传图片为空", "warning")
+                return redirect(url_for("create_note"))
+            image_data = image_bytes
+            image_mime = image_file.mimetype or "application/octet-stream"
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO notes (user_id,title,content,image) VALUES (?,?,?,?)", (user_id, title, content, image_data))
+        cur.execute(
+            "INSERT INTO notes (user_id, title, content, image, image_mime) VALUES (?, ?, ?, ?, ?)",
+            (session["user_id"], title, content, image_data, image_mime)
+        )
         conn.commit()
-        conn.close()
         flash("笔记创建成功", "success")
-        return redirect(url_for('note_list'))
+        return redirect(url_for("note_list"))
     page_html = render_template_string(get_bootstrap_header("创建笔记") + """
 <h1>创建笔记</h1>
 <form method="POST" enctype="multipart/form-data" action="{{ url_for('create_note') }}">
@@ -243,8 +300,8 @@ def create_note():
   <textarea name="content" class="form-control" rows="5"></textarea>
  </div>
  <div class="mb-3">
-  <label class="form-label">图片上传</label>
-  <input type="file" class="form-control" name="image_file">
+  <label class="form-label">图片上传（可选）</label>
+  <input type="file" class="form-control" name="image_file" accept="image/*">
  </div>
  <button type="submit" class="btn btn-primary">保存</button>
 </form>
@@ -261,24 +318,23 @@ def create_note():
 {% endwith %}
 """ + get_bootstrap_footer())
     return page_html
-@app.route('/note/<int:note_id>')
+
+@app.route("/note/<int:note_id>")
 def note_detail(note_id):
-    if 'user_id' not in session:
+    if "user_id" not in session:
         flash("请先登录", "warning")
-        return redirect(url_for('login'))
-    user_id = session['user_id']
+        return redirect(url_for("login"))
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id,title,content,image FROM notes WHERE id=? AND user_id=?", (note_id, user_id))
+    cur.execute("SELECT id, title, content, image, image_mime FROM notes WHERE id = ? AND user_id = ?", (note_id, session["user_id"]))
     note = cur.fetchone()
-    conn.close()
     if not note:
         flash("笔记不存在或无权访问", "warning")
-        return redirect(url_for('note_list'))
+        return redirect(url_for("note_list"))
     image_base64 = None
-    if note['image']:
-        import base64
-        image_base64 = base64.b64encode(note['image']).decode('utf-8')
+    image_mime = note["image_mime"] or "image/jpeg"
+    if note["image"]:
+        image_base64 = base64.b64encode(note["image"]).decode("utf-8")
     page_html = render_template_string(get_bootstrap_header("笔记详情") + """
 <h1>笔记详情</h1>
 <div class="card mb-3">
@@ -286,7 +342,7 @@ def note_detail(note_id):
   <h5 class="card-title">{{ note['title'] }}</h5>
   <p class="card-text">{{ note['content'] }}</p>
   {% if image_base64 %}
-  <img src="data:image/jpeg;base64,{{ image_base64 }}" alt="笔记图片" class="img-fluid mt-3">
+  <img src="data:{{ image_mime }};base64,{{ image_base64 }}" alt="笔记图片" class="img-fluid mt-3">
   {% endif %}
  </div>
 </div>
@@ -301,46 +357,51 @@ def note_detail(note_id):
  </ul>
  {% endif %}
 {% endwith %}
-""" + get_bootstrap_footer(), note=note, image_base64=image_base64)
+""" + get_bootstrap_footer(), note=note, image_base64=image_base64, image_mime=image_mime)
     return page_html
-@app.route('/note/<int:note_id>/edit', methods=['GET', 'POST'])
+
+@app.route("/note/<int:note_id>/edit", methods=["GET", "POST"])
 def edit_note(note_id):
-    if 'user_id' not in session:
+    if "user_id" not in session:
         flash("请先登录", "warning")
-        return redirect(url_for('login'))
-    user_id = session['user_id']
+        return redirect(url_for("login"))
     conn = get_db_connection()
     cur = conn.cursor()
-    # 验证笔记归属并取出当前数据
-    cur.execute("SELECT id,title,content,image FROM notes WHERE id=? AND user_id=?", (note_id, user_id))
+    cur.execute("SELECT id, title, content, image, image_mime FROM notes WHERE id = ? AND user_id = ?", (note_id, session["user_id"]))
     note = cur.fetchone()
     if not note:
-        conn.close()
         flash("笔记不存在或无权编辑", "warning")
-        return redirect(url_for('note_list'))
-    if request.method == 'POST':
-        # 获取表单并处理图片（如果上传则替换，否则保留原图）
-        title = request.form.get('title', '').strip()
-        content = request.form.get('content', '').strip()
-        image_file = request.files.get('image_file', None)
+        return redirect(url_for("note_list"))
+    if request.method == "POST":
+        title = request.form.get("title", "").strip()
+        content = request.form.get("content", "").strip()
+        image_file = request.files.get("image_file")
         if not title:
-            conn.close()
             flash("笔记标题不能为空", "warning")
-            return redirect(url_for('edit_note', note_id=note_id))
-        image_data = note['image']  # 默认保留原图（可能为 None）
+            return redirect(url_for("edit_note", note_id=note_id))
+        image_data = note["image"]
+        image_mime = note["image_mime"]
         if image_file and image_file.filename:
             filename = secure_filename(image_file.filename)
-            image_data = image_file.read()
-        cur.execute("UPDATE notes SET title=?, content=?, image=? WHERE id=? AND user_id=?", (title, content, image_data, note_id, user_id))
+            if not allowed_image_filename(filename):
+                flash("不支持的图片类型", "warning")
+                return redirect(url_for("edit_note", note_id=note_id))
+            image_bytes = image_file.read()
+            if not image_bytes:
+                flash("上传图片为空", "warning")
+                return redirect(url_for("edit_note", note_id=note_id))
+            image_data = image_bytes
+            image_mime = image_file.mimetype or image_mime or "application/octet-stream"
+        cur.execute(
+            "UPDATE notes SET title = ?, content = ?, image = ?, image_mime = ? WHERE id = ? AND user_id = ?",
+            (title, content, image_data, image_mime, note_id, session["user_id"])
+        )
         conn.commit()
-        conn.close()
         flash("笔记已更新", "success")
-        return redirect(url_for('note_detail', note_id=note_id))
-    # GET 请求，准备页面（若有图片则转 base64）
+        return redirect(url_for("note_detail", note_id=note_id))
     image_base64 = None
-    if note['image']:
-        import base64
-        image_base64 = base64.b64encode(note['image']).decode('utf-8')
+    if note["image"]:
+        image_base64 = base64.b64encode(note["image"]).decode("utf-8")
     page_html = render_template_string(get_bootstrap_header("编辑笔记") + """
 <h1>编辑笔记</h1>
 <form method="POST" enctype="multipart/form-data" action="{{ url_for('edit_note', note_id=note['id']) }}">
@@ -354,12 +415,12 @@ def edit_note(note_id):
  </div>
  <div class="mb-3">
   <label class="form-label">图片（上传新图片将替换旧图）</label>
-  <input type="file" class="form-control" name="image_file">
+  <input type="file" class="form-control" name="image_file" accept="image/*">
  </div>
 {% if image_base64 %}
 <div class="mb-3">
  <label class="form-label">当前图片预览</label>
- <div><img src="data:image/jpeg;base64,{{ image_base64 }}" class="img-fluid" alt="当前图片"></div>
+ <div><img src="data:{{ note['image_mime'] or 'image/jpeg' }};base64,{{ image_base64 }}" class="img-fluid" alt="当前图片"></div>
 </div>
 {% endif %}
  <button type="submit" class="btn btn-primary">保存更改</button>
@@ -376,7 +437,25 @@ def edit_note(note_id):
  {% endif %}
 {% endwith %}
 """ + get_bootstrap_footer(), note=note, image_base64=image_base64)
-    conn.close()
     return page_html
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+
+@app.route("/note/<int:note_id>/image")
+def note_image(note_id):
+    """Optional: serve raw image bytes (safer for large images)"""
+    if "user_id" not in session:
+        flash("请先登录", "warning")
+        return redirect(url_for("login"))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT image, image_mime FROM notes WHERE id = ? AND user_id = ?", (note_id, session["user_id"]))
+    row = cur.fetchone()
+    if not row or not row["image"]:
+        flash("图片不存在或无权访问", "warning")
+        return redirect(url_for("note_detail", note_id=note_id))
+    mime = row["image_mime"] or "application/octet-stream"
+    return send_file(BytesIO(row["image"]), mimetype=mime, download_name=f"note_{note_id}_image", as_attachment=False)
+
+# --- Main ---
+if __name__ == "__main__":
+    # For production, use a WSGI server (gunicorn/uwsgi). Debug only for local dev.
+    app.run(host="0.0.0.0", port=5000, debug=True)
