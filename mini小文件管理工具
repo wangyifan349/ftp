@@ -1,0 +1,440 @@
+import os
+import shutil
+from pathlib import Path
+from datetime import datetime
+from flask import Flask, request, send_from_directory, render_template_string, jsonify, abort
+
+app = Flask(__name__)
+BASE = Path("uploads").resolve()
+BASE.mkdir(parents=True, exist_ok=True)
+
+HTML = """
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>File Manager</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root{
+      --accent:#4f46e5;
+      --muted:#6c757d;
+      --bg:#f8fafc;
+    }
+    body{background:linear-gradient(180deg,#f1f5ff,white);padding:24px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue";}
+    .card-custom{border-radius:12px;box-shadow:0 6px 20px rgba(31,41,55,0.06);}
+    .dropzone{border:2px dashed rgba(79,70,229,0.18);background:linear-gradient(180deg,rgba(79,70,229,0.02),transparent);padding:28px;border-radius:12px;text-align:center;cursor:pointer;transition:all .15s;}
+    .dropzone.drag{transform:translateY(-4px);box-shadow:0 8px 30px rgba(79,70,229,0.08);}
+    .tree{max-height:62vh;overflow:auto;padding:12px;}
+    .node{display:flex;align-items:center;justify-content:space-between;padding:8px;border-radius:8px;transition:background .08s;}
+    .node:hover{background:#fff;}
+    .node .name{display:flex;gap:12px;align-items:center;}
+    .folder{color:var(--accent)}
+    .file{color:#0f172a}
+    .meta{font-size:.82rem;color:var(--muted)}
+    .context-menu{position:absolute;z-index:1200;display:none;background:#fff;border-radius:8px;padding:6px;box-shadow:0 8px 30px rgba(2,6,23,0.08);min-width:160px}
+    .context-menu button{width:100%;text-align:left;border:none;background:none;padding:8px 10px;border-radius:6px}
+    .context-menu button:hover{background:#f8fafc}
+    .small-muted{font-size:.85rem;color:var(--muted)}
+    .breadcrumb-custom{background:transparent;padding:0;margin-bottom:0}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="d-flex align-items-center justify-content-between mb-4">
+      <h2 class="mb-0">File Manager</h2>
+      <div class="small-muted">Uploads base: <strong>/uploads</strong></div>
+    </div>
+
+    <div class="row g-4">
+      <div class="col-lg-8">
+        <div class="card card-custom p-3">
+          <div id="dropzone" class="dropzone mb-3">
+            <div class="d-flex flex-column align-items-center">
+              <i class="bi bi-cloud-arrow-up" style="font-size:34px;color:var(--accent)"></i>
+              <div class="h6 mt-2">Drag & Drop files or folders here</div>
+              <div class="small-muted">Click to browse. Multiple files supported. Folder upload keeps relative paths (Chrome/Edge).</div>
+            </div>
+          </div>
+
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <div>
+              <nav style="--bs-breadcrumb-divider:'›';" aria-label="breadcrumb">
+                <ol class="breadcrumb breadcrumb-custom p-0 mb-0">
+                  <li class="breadcrumb-item">uploads</li>
+                </ol>
+              </nav>
+            </div>
+            <div>
+              <button id="refreshBtn" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+            </div>
+          </div>
+
+          <div id="tree" class="tree bg-white rounded border"></div>
+        </div>
+      </div>
+
+      <div class="col-lg-4">
+        <div class="card card-custom p-3">
+          <h6>Selected Item</h6>
+          <div id="info" class="small-muted">Click an item to view details. Right-click for actions. Drag files into folders to move.</div>
+          <hr>
+          <div id="actions" class="d-grid gap-2">
+            <button id="downloadBtn" class="btn btn-primary btn-sm" disabled><i class="bi bi-download"></i> Download</button>
+            <button id="renameBtn" class="btn btn-outline-secondary btn-sm" disabled><i class="bi bi-pencil"></i> Rename</button>
+            <button id="deleteBtn" class="btn btn-danger btn-sm" disabled><i class="bi bi-trash"></i> Delete</button>
+          </div>
+        </div>
+
+        <div class="card card-custom p-3 mt-3">
+          <h6>Tips</h6>
+          <ul class="small-muted mb-0">
+            <li>Double-click a file to download.</li>
+            <li>Right-click a file/folder to rename or delete.</li>
+            <li>Drag a file onto a folder to move it.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="contextMenu" class="context-menu">
+    <button id="ctxDownload"><i class="bi bi-download me-2"></i>Download</button>
+    <button id="ctxRename"><i class="bi bi-pencil me-2"></i>Rename</button>
+    <button id="ctxDelete"><i class="bi bi-trash me-2"></i>Delete</button>
+  </div>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script>
+const apiBase = '';
+let selectedPath = '';
+let selectedIsDir = false;
+let dragSource = '';
+
+// utilities
+function fmtSize(bytes){
+  if(bytes === null || bytes === undefined) return '';
+  if(bytes < 1024) return bytes + ' B';
+  const units = ['KB','MB','GB','TB'];
+  let i= -1;
+  do { bytes /= 1024; i++; } while(bytes >= 1024 && i < units.length-1);
+  return bytes.toFixed(1) + ' ' + units[i];
+}
+
+// render tree
+function renderTree(nodes, $container){
+  $container.empty();
+  nodes.forEach(node=>{
+    const $row = $(`<div class="node" data-path="${node.path}"></div>`);
+    const left = $(`<div class="name"></div>`);
+    if(node.type === 'dir'){
+      left.append(`<i class="bi bi-folder-fill folder" style="font-size:20px"></i>`);
+      left.append(`<div><div class="fw-semibold">${node.name}</div><div class="meta">Folder · ${node.mtime}</div></div>`);
+    } else {
+      left.append(`<i class="bi bi-file-earmark-fill file" style="font-size:20px"></i>`);
+      left.append(`<div><div class="fw-semibold">${node.name}</div><div class="meta">${fmtSize(node.size)} · ${node.mtime}</div></div>`);
+    }
+    $row.append(left);
+    $container.append($row);
+
+    // children
+    if(node.type === 'dir' && node.children && node.children.length){
+      const $sub = $('<div class="ms-4"></div>');
+      renderTree(node.children, $sub);
+      $sub.hide();
+      $container.append($sub);
+      left.click(()=> $sub.toggle());
+    }
+  });
+}
+
+// load list
+function loadList(){
+  $.getJSON('/list').done(data=>{
+    renderTree(data, $('#tree'));
+  }).fail(()=>alert('Failed to load'));
+}
+loadList();
+
+// upload
+$('#dropzone').on('click', ()=> $('<input type="file" webkitdirectory directory multiple>').click().on('change', e=> uploadFiles(e.target.files) ));
+
+$('#dropzone').on('dragover', e=>{ e.preventDefault(); $('#dropzone').addClass('drag'); });
+$('#dropzone').on('dragleave', e=>{ e.preventDefault(); $('#dropzone').removeClass('drag'); });
+$('#dropzone').on('drop', e=>{
+  e.preventDefault();
+  $('#dropzone').removeClass('drag');
+  uploadFiles(e.originalEvent.dataTransfer.files);
+});
+
+function uploadFiles(files){
+  const form = new FormData();
+  for(const f of files){
+    const rel = f.webkitRelativePath || f.relativePath || f.name;
+    form.append('files', f, rel);
+  }
+  $.ajax({url:'/upload', method:'POST', data:form, processData:false, contentType:false})
+    .done(()=> loadList())
+    .fail(()=> alert('Upload failed'));
+}
+
+// selection and actions
+$(document).on('click', '.node', function(e){
+  e.stopPropagation();
+  const path = $(this).data('path');
+  selectedPath = path;
+  selectedIsDir = $(this).find('.folder').length > 0;
+  $('#downloadBtn').prop('disabled', selectedIsDir);
+  $('#renameBtn').prop('disabled', false);
+  $('#deleteBtn').prop('disabled', false);
+  // fetch meta
+  $.getJSON('/meta', {path}).done(data=>{
+    $('#info').html(`<div class="fw-semibold">${data.name}</div><div class="small-muted">Type: ${data.type}</div><div class="small-muted">Path: ${data.path}</div><div class="small-muted">Size: ${data.size_text}</div><div class="small-muted">Modified: ${data.mtime}</div>`);
+  }).fail(()=> $('#info').text('Failed to get info'));
+});
+
+// double click download
+$(document).on('dblclick', '.node', function(e){
+  if($(this).find('.file').length){
+    const path = $(this).data('path');
+    window.location = '/download/' + encodeURIComponent(path);
+  }
+});
+
+// right-click context menu
+$(document).on('contextmenu', '.node', function(e){
+  e.preventDefault();
+  const path = $(this).data('path');
+  selectedPath = path;
+  selectedIsDir = $(this).find('.folder').length > 0;
+  $('#contextMenu').css({top:e.pageY,left:e.pageX}).show();
+  $('#ctxDownload').prop('disabled', selectedIsDir);
+});
+
+$(document).click(()=> $('#contextMenu').hide());
+
+// context actions
+$('#ctxDownload').click(()=> { if(selectedPath) window.location = '/download/' + encodeURIComponent(selectedPath); });
+$('#ctxDelete').click(()=> doDelete());
+$('#ctxRename').click(()=> doRename());
+
+$('#downloadBtn').click(()=> { if(selectedPath) window.location = '/download/' + encodeURIComponent(selectedPath); });
+$('#deleteBtn').click(()=> doDelete());
+$('#renameBtn').click(()=> doRename());
+
+function doDelete(){
+  if(!selectedPath) return;
+  if(!confirm('Confirm delete? This action cannot be undone.')) return;
+  $.post('/delete', {path:selectedPath}).done(()=> { loadList(); $('#info').text('Deleted'); }).fail(()=> alert('Delete failed'));
+}
+
+function doRename(){
+  if(!selectedPath) return;
+  const newName = prompt('Enter new name (only name, no slashes):');
+  if(!newName) return;
+  $.post('/rename', {path:selectedPath, new_name:newName}).done(()=> loadList()).fail(xhr=> alert('Rename failed: ' + xhr.responseText));
+}
+
+// drag & drop move
+$(document).on('dragstart', '.node', function(e){
+  dragSource = $(this).data('path');
+  e.originalEvent.dataTransfer.setData('text/plain', dragSource);
+});
+$(document).on('dragover', '.node', function(e){
+  const $target = $(this);
+  if($target.find('.folder').length) { e.preventDefault(); $target.addClass('bg-light'); }
+});
+$(document).on('dragleave', '.node', function(e){ $(this).removeClass('bg-light'); });
+$(document).on('drop', '.node', function(e){
+  e.preventDefault();
+  const $target = $(this);
+  $target.removeClass('bg-light');
+  const dest = $target.data('path');
+  if(!$target.find('.folder').length) return;
+  if(!dragSource) return;
+  $.post('/move', {src:dragSource, dest:dest}).done(()=> loadList()).fail(xhr=> alert('Move failed: ' + xhr.responseText));
+  dragSource = '';
+});
+
+// refresh
+$('#refreshBtn').click(()=> loadList());
+</script>
+</body>
+</html>
+"""
+
+def safe_join(base: Path, *parts) -> Path:
+    candidate = (base.joinpath(*parts)).resolve()
+    try:
+        candidate.relative_to(base)
+    except Exception:
+        raise ValueError("Invalid path")
+    return candidate
+
+def walk_directory(root: Path):
+    items = []
+    entries = sorted(root.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+    for entry in entries:
+        rel = entry.relative_to(BASE).as_posix()
+        stat = entry.stat()
+        mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+        if entry.is_dir():
+            items.append({
+                "type": "dir",
+                "name": entry.name,
+                "path": rel,
+                "mtime": mtime,
+                "children": walk_directory(entry)
+            })
+        else:
+            items.append({
+                "type": "file",
+                "name": entry.name,
+                "path": rel,
+                "size": stat.st_size,
+                "mtime": mtime
+            })
+    return items
+
+def human_size(n: int) -> str:
+    if n < 1024: return f"{n} B"
+    for unit in ['KB','MB','GB','TB']:
+        n /= 1024.0
+        if n < 1024: return f"{n:.1f} {unit}"
+    return f"{n:.1f} PB"
+
+@app.route("/")
+def index():
+    return render_template_string(HTML)
+
+@app.route("/list")
+def list_route():
+    return jsonify(walk_directory(BASE))
+
+@app.route("/meta")
+def meta_route():
+    rel = request.args.get("path", "")
+    try:
+        path = safe_join(BASE, rel)
+    except ValueError:
+        return abort(400, "Invalid path")
+    if not path.exists():
+        return abort(404, "Not found")
+    stat = path.stat()
+    return jsonify({
+        "name": path.name,
+        "path": path.relative_to(BASE).as_posix(),
+        "type": "dir" if path.is_dir() else "file",
+        "size": stat.st_size if path.is_file() else None,
+        "size_text": human_size(stat.st_size) if path.is_file() else "",
+        "mtime": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+    })
+
+@app.route("/upload", methods=["POST"])
+def upload_route():
+    for storage in request.files.getlist("files"):
+        raw_name = storage.filename
+        if not raw_name:
+            continue
+        rel_path = Path(raw_name).as_posix().lstrip("/\\")
+        try:
+            dest = safe_join(BASE, rel_path)
+        except ValueError:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        storage.save(dest)
+    return "ok"
+
+@app.route("/download/<path:filename>")
+def download_route(filename):
+    try:
+        path = safe_join(BASE, filename)
+    except ValueError:
+        return abort(400, "Invalid path")
+    if not path.exists() or path.is_dir():
+        return abort(404, "Not found")
+    return send_from_directory(str(BASE), path.relative_to(BASE).as_posix(), as_attachment=True)
+
+@app.route("/delete", methods=["POST"])
+def delete_route():
+    rel = request.form.get("path", "")
+    try:
+        path = safe_join(BASE, rel)
+    except ValueError:
+        return abort(400, "Invalid path")
+    if not path.exists():
+        return "ok"
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except Exception as e:
+        return str(e), 500
+    return "ok"
+
+@app.route("/rename", methods=["POST"])
+def rename_route():
+    rel = request.form.get("path", "")
+    new_name = request.form.get("new_name", "")
+    if not new_name or '/' in new_name or '\\' in new_name:
+        return "Invalid new name", 400
+    try:
+        path = safe_join(BASE, rel)
+    except ValueError:
+        return "Invalid path", 400
+    if not path.exists():
+        return "Not found", 404
+    target = path.with_name(new_name)
+    try:
+        target = safe_join(BASE, target.relative_to(BASE))
+    except Exception:
+        return "Invalid target", 400
+    if target.exists():
+        return "Target exists", 400
+    try:
+        path.rename(target)
+    except Exception as e:
+        return str(e), 500
+    return "ok"
+
+@app.route("/move", methods=["POST"])
+def move_route():
+    src = request.form.get("src", "")
+    dest = request.form.get("dest", "")
+    try:
+        src_path = safe_join(BASE, src)
+        dest_path = safe_join(BASE, dest)
+    except ValueError:
+        return "Invalid path", 400
+    if not src_path.exists():
+        return "Source not found", 404
+    if not dest_path.exists() or not dest_path.is_dir():
+        return "Destination must be an existing directory", 400
+    # Prevent moving a directory into itself or its subdirectory
+    try:
+        # Python 3.9+: use is_relative_to
+        if src_path.is_dir() and dest_path.resolve().is_relative_to(src_path.resolve()):
+            return "Cannot move a directory into itself or its subdirectory", 400
+    except AttributeError:
+        # Fallback for Python <3.9
+        try:
+            dest_path.resolve().relative_to(src_path.resolve())
+            return "Cannot move a directory into itself or its subdirectory", 400
+        except Exception:
+            pass
+    except Exception:
+        # Any other resolution error, reject safely
+        return "Invalid move operation", 400
+    target_path = dest_path.joinpath(src_path.name)
+    if target_path.exists():
+        return "Target already exists", 400
+    try:
+        shutil.move(str(src_path), str(target_path))
+    except Exception as e:
+        return str(e), 500
+    return "ok"
+if __name__ == "__main__":
+    app.run(debug=True)
