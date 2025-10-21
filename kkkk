@@ -59,6 +59,22 @@ def index():
             .btn-icon {
                 font-size: 1.2em;
             }
+            .context-menu {
+                position: absolute;
+                background-color: white;
+                border: 1px solid #ccc;
+                display: none;
+                z-index: 1000;
+            }
+            .context-menu a {
+                display: block;
+                padding: 8px 12px;
+                text-decoration: none;
+                color: black;
+            }
+            .context-menu a:hover {
+                background-color: #f8f9fa;
+            }
         </style>
     </head>
     <body>
@@ -74,9 +90,9 @@ def index():
             </form>
 
             <!-- 目录结构展示 -->
-            <div id="file-list">
+            <div id="file-list" class="d-flex flex-wrap">
                 {% for item in files %}
-                    <div class="folder" data-path="{{ item.name }}">
+                    <div class="folder" data-path="{{ item.name }}" draggable="true">
                         <strong>{{ item.name }}</strong>
                         <div class="file-list">
                             {% for child in item.children %}
@@ -85,12 +101,18 @@ def index():
                                     <div class="float-end">
                                         <button class="btn btn-sm btn-warning rename-btn" data-path="{{ child.name }}">重命名</button>
                                         <button class="btn btn-sm btn-danger delete-btn" data-path="{{ child.name }}">删除</button>
+                                        <a href="/download/{{ child.name }}" class="btn btn-sm btn-success">下载</a>
                                     </div>
                                 </div>
                             {% endfor %}
                         </div>
                     </div>
                 {% endfor %}
+            </div>
+
+            <!-- 右键菜单 -->
+            <div class="context-menu">
+                <a href="#" id="create-folder">新建文件夹</a>
             </div>
 
         </div>
@@ -122,19 +144,24 @@ def index():
             // 删除文件
             $(document).on('click', '.delete-btn', function() {
                 var filePath = $(this).data('path');
-                $.ajax({
-                    url: '/delete',
-                    type: 'POST',
-                    data: { path: filePath },
-                    success: function(response) {
-                        if (response.success) {
-                            alert(response.message);
-                            location.reload();  // 删除成功后刷新页面
-                        } else {
-                            alert(response.error);
+                if (confirm("确定要删除吗？")) {
+                    $.ajax({
+                        url: '/delete',
+                        type: 'POST',
+                        data: { path: filePath },
+                        success: function(response) {
+                            if (response.success) {
+                                alert(response.message);
+                                location.reload();  // 删除成功后刷新页面
+                            } else {
+                                alert(response.error);
+                            }
+                        },
+                        error: function() {
+                            alert('删除失败！');
                         }
-                    }
-                });
+                    });
+                }
             });
 
             // 重命名文件或文件夹
@@ -164,25 +191,65 @@ def index():
                 handle: '.folder',
                 animation: 150,
                 onEnd: function(evt) {
-                    console.log("拖拽结束");
-                    var fromPath = evt.from.dataset.path;
-                    var toPath = evt.to.dataset.path;
+                    var fromPath = evt.from.dataset.path;  // 来源文件夹路径
+                    var toPath = evt.to.dataset.path;  // 目标文件夹路径
+                    var movedItem = evt.item.dataset.path;  // 移动的文件或文件夹
+
+                    // 调用后端API移动文件或文件夹
                     $.ajax({
                         url: '/move',
                         type: 'POST',
                         data: {
-                            from: fromPath,
-                            to: toPath
+                            from: fromPath + '/' + movedItem,
+                            to: toPath + '/' + movedItem
                         },
                         success: function(response) {
                             if (response.success) {
-                                alert("文件或文件夹移动成功！");
+                                alert("文件或文件夹已成功移动！");
+                                location.reload();  // 移动成功后刷新页面
                             } else {
                                 alert(response.error);
                             }
+                        },
+                        error: function() {
+                            alert("移动失败！");
                         }
                     });
                 }
+            });
+
+            // 右键菜单显示
+            $(document).on('contextmenu', '.folder, .file', function(e) {
+                e.preventDefault();
+                var contextMenu = $('.context-menu');
+                contextMenu.css({
+                    top: e.pageY + 'px',
+                    left: e.pageX + 'px'
+                }).show();
+                
+                // 右键菜单操作：新建文件夹
+                $('#create-folder').on('click', function() {
+                    var folderName = prompt("请输入文件夹名称");
+                    if (folderName) {
+                        $.ajax({
+                            url: '/create-folder',
+                            type: 'POST',
+                            data: { folder_name: folderName },
+                            success: function(response) {
+                                if (response.success) {
+                                    alert(response.message);
+                                    location.reload();
+                                } else {
+                                    alert(response.error);
+                                }
+                            }
+                        });
+                    }
+                });
+
+                $(document).on('click', function() {
+                    contextMenu.hide();  // 点击空白区域隐藏右键菜单
+                });
             });
         </script>
     </body>
@@ -257,5 +324,18 @@ def move_file():
     
     return jsonify({"error": "源路径未找到"})
 
+# 新建文件夹
+@app.route('/create-folder', methods=['POST'])
+def create_folder():
+    folder_name = request.form.get('folder_name')
+    if folder_name:
+        folder_path = os.path.join(app.config['UPLOAD_FOLDER'], folder_name)
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+            return jsonify({"success": True, "message": "文件夹已创建"})
+        else:
+            return jsonify({"error": "文件夹已存在"})
+    return jsonify({"error": "文件夹名称不能为空"})
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)
