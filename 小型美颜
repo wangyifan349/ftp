@@ -1,0 +1,366 @@
+import cv2
+import dlib
+import numpy as np
+
+# 加载 Dlib 的人脸检测器和关键点检测器
+detector = dlib.get_frontal_face_detector()
+predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")  # 需要下载此文件
+
+# 1. 人脸检测与关键点定位
+def detect_face(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    faces = detector(gray)
+    return faces, gray
+
+# 2. 获取面部区域
+def get_face_region(image, faces):
+    for face in faces:
+        # 获取面部关键点
+        landmarks = predictor(image, face)
+        # 获取人脸的矩形框 (x, y, w, h)
+        (x, y, w, h) = (face.left(), face.top(), face.width(), face.height())
+        face_image = image[y:y+h, x:x+w]
+        return face_image, (x, y, w, h)
+    return None, None
+
+# 3. 精确的肤色分割（使用 YCbCr 色彩空间）
+def skin_segmentation(image):
+    # 转为 YCbCr 色彩空间
+    ycbcr = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+    # 设置肤色的 YCbCr 范围（可以根据实际调整）
+    lower_skin = np.array([0, 133, 77], dtype=np.uint8)
+    upper_skin = np.array([255, 173, 127], dtype=np.uint8)
+    skin_mask = cv2.inRange(ycbcr, lower_skin, upper_skin)
+    skin = cv2.bitwise_and(image, image, mask=skin_mask)
+    return skin
+
+# 4. 磨皮：使用双边滤波进行肤色平滑
+def smooth_skin(image):
+    return cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
+
+# 5. 去瑕疵：使用自定义方法（例如 medianBlur）去除小瑕疵
+def remove_blemishes(image):
+    return cv2.medianBlur(image, 5)
+
+# 6. 提亮肤色：增加亮度和对比度
+def brighten_skin(image):
+    alpha = 1.2  # 对比度控制
+    beta = 30    # 亮度控制
+    return cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
+
+# 7. 眼睛和嘴巴增强亮度
+def enhance_eyes_and_lips(image, faces):
+    for face in faces:
+        landmarks = predictor(image, face)
+
+        # 获取眼睛区域
+        left_eye = landmarks.part(36)
+        right_eye = landmarks.part(45)
+        # 提取眼睛区域
+        eye_region = image[left_eye.y:right_eye.y, left_eye.x:right_eye.x]
+        # 亮化眼睛区域
+        eye_region = brighten_skin(eye_region)
+
+        # 获取嘴巴区域
+        top_lip = landmarks.part(51)
+        bottom_lip = landmarks.part(57)
+        lip_region = image[top_lip.y:bottom_lip.y, top_lip.x:bottom_lip.x]
+        # 亮化嘴巴区域
+        lip_region = brighten_skin(lip_region)
+
+        # 替换原图中的眼睛和嘴巴部分
+        image[left_eye.y:right_eye.y, left_eye.x:right_eye.x] = eye_region
+        image[top_lip.y:bottom_lip.y, top_lip.x:bottom_lip.x] = lip_region
+
+    return image
+
+# 8. 进行美颜整体处理
+def beautify_image(image_path):
+    # 读取图片
+    image = cv2.imread(image_path)
+
+    # 1. 人脸检测
+    faces, gray = detect_face(image)
+
+    if len(faces) == 0:
+        print("未检测到人脸")
+        return image
+
+    # 2. 获取面部区域
+    face_image, face_rect = get_face_region(image, faces)
+
+    if face_image is not None:
+        # 3. 肤色分割（使用 YCbCr 色彩空间）
+        face_skin = skin_segmentation(face_image)
+
+        # 4. 磨皮处理
+        smoothed_face = smooth_skin(face_skin)
+
+        # 5. 去瑕疵
+        blemish_free_face = remove_blemishes(smoothed_face)
+
+        # 6. 提亮肤色
+        brightened_face = brighten_skin(blemish_free_face)
+
+        # 将处理后的面部图像合成回原图
+        (x, y, w, h) = face_rect
+        image[y:y+h, x:x+w] = brightened_face
+
+    # 7. 增强眼睛和嘴巴区域的亮度
+    image = enhance_eyes_and_lips(image, faces)
+
+    return image
+
+# 9. 保存美颜后的图像
+def save_beautified_image(image, output_path="beautified_image.jpg"):
+    cv2.imwrite(output_path, image)
+    print(f"美颜后的图像已保存为 {output_path}")
+
+# 10. 主程序
+if __name__ == "__main__":
+    image_path = "your_image.jpg"  # 替换为你的图片路径
+    beautified_image = beautify_image(image_path)
+
+    # 显示美颜后的图像
+    cv2.imshow("Beautified Image", beautified_image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    # 保存美颜后的图像
+    save_beautified_image(beautified_image)
+
+
+
+
+
+
+
+
+
+
+import cv2
+import dlib
+import numpy as np
+
+# 加载 Dlib 的人脸检测器和关键点检测器
+detector = dlib.get_frontal_face_detector()  # 人脸检测器，用于检测图片中的人脸
+predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")  # 68点人脸关键点模型，需下载该文件
+
+# 1. 人脸检测与关键点定位
+def detect_face(image):
+    """
+    对输入的图像进行人脸检测，返回检测到的人脸区域。
+
+    参数：
+    - image: 输入的图像（BGR 格式）
+
+    返回：
+    - faces: 检测到的人脸矩形框列表，每个 face 是 dlib.rectangle 类型，包含人脸位置。
+    - gray: 转换为灰度图后的图像（人脸检测一般使用灰度图）。
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)  # 将图像转换为灰度图
+    faces = detector(gray)  # 使用 Dlib 的人脸检测器检测人脸
+    return faces, gray
+
+# 2. 获取面部区域
+def get_face_region(image, faces):
+    """
+    从检测到的人脸中提取出面部区域。
+
+    参数：
+    - image: 输入的图像（BGR 格式）
+    - faces: 人脸检测结果，返回的是多个 dlib.rectangle 对象，表示每个人脸的位置
+
+    返回：
+    - face_image: 截取到的人脸区域图像
+    - (x, y, w, h): 人脸矩形框的位置（左上角坐标和宽高）
+    """
+    for face in faces:
+        landmarks = predictor(image, face)  # 获取该人脸的68个关键点
+        (x, y, w, h) = (face.left(), face.top(), face.width(), face.height())  # 获取矩形框的坐标
+        face_image = image[y:y+h, x:x+w]  # 截取人脸区域
+        return face_image, (x, y, w, h)
+    return None, None  # 如果没有检测到人脸，返回 None
+
+# 3. 精确的肤色分割（使用 YCbCr, HSV, Lab 色彩空间）
+def skin_segmentation(image):
+    """
+    使用 YCbCr, HSV 和 Lab 三种色彩空间进行肤色分割，提取皮肤区域。
+
+    参数：
+    - image: 输入的图像（BGR 格式）
+
+    返回：
+    - skin: 通过肤色分割提取的皮肤区域图像
+    """
+    # 转为 YCbCr 色彩空间
+    ycbcr = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+    lower_skin_ycbcr = np.array([0, 133, 77], dtype=np.uint8)  # YCbCr 中肤色的低阈值
+    upper_skin_ycbcr = np.array([255, 173, 127], dtype=np.uint8)  # YCbCr 中肤色的高阈值
+    skin_mask_ycbcr = cv2.inRange(ycbcr, lower_skin_ycbcr, upper_skin_ycbcr)  # 获取肤色掩码
+
+    # 转为 HSV 色彩空间
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower_skin_hsv = np.array([0, 20, 70], dtype=np.uint8)  # HSV 中肤色的低阈值
+    upper_skin_hsv = np.array([20, 255, 255], dtype=np.uint8)  # HSV 中肤色的高阈值
+    skin_mask_hsv = cv2.inRange(hsv, lower_skin_hsv, upper_skin_hsv)  # 获取肤色掩码
+
+    # 转为 Lab 色彩空间
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2Lab)
+    lower_skin_lab = np.array([0, 133, 77], dtype=np.uint8)  # Lab 中肤色的低阈值
+    upper_skin_lab = np.array([255, 173, 127], dtype=np.uint8)  # Lab 中肤色的高阈值
+    skin_mask_lab = cv2.inRange(lab, lower_skin_lab, upper_skin_lab)  # 获取肤色掩码
+
+    # 合并三个色彩空间的肤色掩码，得到更准确的肤色区域
+    skin_mask = cv2.bitwise_or(skin_mask_ycbcr, skin_mask_hsv)
+    skin_mask = cv2.bitwise_or(skin_mask, skin_mask_lab)
+
+    # 使用掩码提取肤色区域
+    skin = cv2.bitwise_and(image, image, mask=skin_mask)
+    return skin
+
+# 4. 磨皮：使用双边滤波进行肤色平滑
+def smooth_skin(image):
+    """
+    使用双边滤波平滑图像，保持边缘细节的同时去除皮肤的瑕疵。
+
+    参数：
+    - image: 输入的图像（BGR 格式）
+
+    返回：
+    - smoothed_image: 经双边滤波平滑后的图像
+    """
+    return cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)  # d=9: 窗口大小，sigmaColor: 色彩相似度，sigmaSpace: 空间相似度
+
+# 5. 去瑕疵：使用自定义方法（例如 medianBlur）去除小瑕疵
+def remove_blemishes(image):
+    """
+    使用中值滤波去除图像中的噪点和小瑕疵。
+
+    参数：
+    - image: 输入的图像（BGR 格式）
+
+    返回：
+    - blemish_free_image: 去除瑕疵后的图像
+    """
+    return cv2.medianBlur(image, 5)  # 使用 5x5 的窗口进行中值滤波
+
+# 6. 提亮肤色：增加亮度和对比度
+def brighten_skin(image):
+    """
+    增加图像的亮度和对比度，使肤色更加明亮。
+
+    参数：
+    - image: 输入的图像（BGR 格式）
+
+    返回：
+    - brightened_image: 提亮后的图像
+    """
+    alpha = 1.2  # 对比度控制，值越大图像越亮
+    beta = 30    # 亮度控制，值越大图像越亮
+    return cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
+
+# 7. 眼睛和嘴巴亮化
+def enhance_eyes_and_lips(image, faces):
+    """
+    亮化眼睛和嘴巴区域，使其更加生动。
+
+    参数：
+    - image: 输入的图像（BGR 格式）
+    - faces: 人脸检测结果，包含每个人脸的矩形框
+
+    返回：
+    - image: 处理后的图像，眼睛和嘴巴区域已亮化
+    """
+    for face in faces:
+        landmarks = predictor(image, face)  # 获取人脸的关键点
+
+        # 获取眼睛区域
+        left_eye = landmarks.part(36)
+        right_eye = landmarks.part(45)
+        eye_region = image[left_eye.y:right_eye.y, left_eye.x:right_eye.x]
+        eye_region = brighten_skin(eye_region)  # 亮化眼睛区域
+
+        # 获取嘴巴区域
+        top_lip = landmarks.part(51)
+        bottom_lip = landmarks.part(57)
+        lip_region = image[top_lip.y:bottom_lip.y, top_lip.x:bottom_lip.x]
+        lip_region = brighten_skin(lip_region)  # 亮化嘴巴区域
+
+        # 替换原图中的眼睛和嘴巴部分
+        image[left_eye.y:right_eye.y, left_eye.x:right_eye.x] = eye_region
+        image[top_lip.y:bottom_lip.y, top_lip.x:bottom_lip.x] = lip_region
+
+    return image
+
+# 8. 进行美颜整体处理
+def beautify_image(image_path):
+    """
+    综合所有美颜步骤，读取图像，进行人脸检测、肤色分割、磨皮、去瑕疵和亮化。
+
+    参数：
+    - image_path: 输入的图像路径（包含文件名和扩展名）
+
+    返回：
+    - image: 经过美颜处理后的图像
+    """
+    # 读取图片
+    image = cv2.imread(image_path)
+
+    # 1. 人脸检测
+    faces, gray = detect_face(image)  # 检测人脸并返回灰度图
+
+    if len(faces) == 0:
+        print("未检测到人脸")
+        return image  # 如果没有检测到人脸，直接返回原图
+
+    # 2. 获取面部区域
+    face_image, face_rect = get_face_region(image, faces)  # 获取人脸区域
+
+    if face_image is not None:
+        # 3. 肤色分割（使用 YCbCr 色彩空间）
+        face_skin = skin_segmentation(face_image)
+
+        # 4. 磨皮处理
+        smoothed_face = smooth_skin(face_skin)
+
+        # 5. 去瑕疵
+        blemish_free_face = remove_blemishes(smoothed_face)
+
+        # 6. 提亮肤色
+        brightened_face = brighten_skin(blemish_free_face)
+
+        # 将处理后的面部图像合成回原图
+        (x, y, w, h) = face_rect
+        image[y:y+h, x:x+w] = brightened_face
+
+    # 7. 增强眼睛和嘴巴区域的亮度
+    image = enhance_eyes_and_lips(image, faces)
+
+    return image
+
+# 9. 保存美颜后的图像
+def save_beautified_image(image, output_path="beautified_image.jpg"):
+    """
+    保存处理后的美颜图像。
+
+    参数：
+    - image: 处理后的图像
+    - output_path: 输出图像的保存路径（默认保存为 beautified_image.jpg）
+    """
+    cv2.imwrite(output_path, image)
+    print(f"美颜后的图像已保存为 {output_path}")
+
+# 10. 主程序
+if __name__ == "__main__":
+    image_path = "your_image.jpg"  # 替换为你的图片路径
+    beautified_image = beautify_image(image_path)
+
+    # 显示美颜后的图像
+    cv2.imshow("Beautified Image", beautified_image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    # 保存美颜后的图像
+    save_beautified_image(beautified_image)
+
