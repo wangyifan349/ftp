@@ -1,33 +1,57 @@
-# qa_faiss_loop.py
 from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
-# 1) 预存问答字典（科普常识示例）
+
+# 1) Pre-stored QA dictionary (science knowledge examples)
+# Keys are questions (strings), values are answer texts (strings).
 qa_dict = {
-    "什么是光年？": """光年是天文学中用于表示距离的单位，等于光在真空中一年所经过的距离，约为9.46 × 10^12 公里。""",
-    "为什么天空是蓝色的？": """天空看起来是蓝色的因为大气分子对短波长（蓝光）的散射比对长波长（红光）更强，这个现象称为瑞利散射。""",
-    "水的沸点是多少？": """在标准大气压（1 atm）下，纯净水的沸点是100°C（212°F）。海拔升高会降低大气压，从而降低沸点。""",
-    "植物如何进行光合作用？": """光合作用是植物利用光能把二氧化碳和水转化为有机物（如葡萄糖）并释放氧气的过程，主要发生在叶绿体中的叶绿素。""",
-    "什么是黑洞？": """黑洞是广义相对论预测的一种天体，因质量极大浓缩导致附近时空极度弯曲，甚至连光也无法逃脱其事件视界。"""
+    "What is a light-year?": """A light-year is a unit of distance used in astronomy equal to the distance light travels in vacuum in one year, about 9.46 × 10^12 kilometers.""",
+    "Why is the sky blue?": """The sky appears blue because atmospheric molecules scatter shorter wavelengths (blue light) more strongly than longer wavelengths (red light); this phenomenon is called Rayleigh scattering.""",
+    "What is the boiling point of water?": """Under standard atmospheric pressure (1 atm), the boiling point of pure water is 100°C (212°F). Higher altitude lowers atmospheric pressure and thus reduces the boiling point.""",
+    "How do plants perform photosynthesis?": """Photosynthesis is the process by which plants use light energy to convert carbon dioxide and water into organic compounds (such as glucose) and release oxygen, primarily occurring in chloroplasts with chlorophyll.""",
+    "What is a black hole?": """A black hole is an astronomical object predicted by general relativity where mass is concentrated so densely that spacetime is extremely curved and not even light can escape its event horizon."""
 }
-# 2) 模型与向量化
+# 2) Model and vectorization
+# Load sentence-transformers model for multilingual semantic embeddings.
 model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+
+# Prepare lists for questions and answers aligned by index.
 questions = list(qa_dict.keys())
 answers = [qa_dict[q] for q in questions]
+# Encode question texts to dense vectors.
+# convert_to_numpy=True returns a numpy array; show_progress_bar=False disables progress bar.
 embeddings = model.encode(questions, convert_to_numpy=True, show_progress_bar=False)
-embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)  # 归一化
-dim = embeddings.shape[1]
-index = faiss.IndexFlatIP(dim)
-index.add(embeddings)
-# 3) 检索函数
+# Normalize embeddings to unit length for cosine-similarity via inner product.
+embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+# Create a FAISS index using inner product (dot product) for similarity search.
+dimension = embeddings.shape[1]
+index = faiss.IndexFlatIP(dimension)
+index.add(embeddings)  # add vectors to the index
+# 3) Retrieval function
 def retrieve_answers(query, top_k=3, score_threshold=0.35):
-    q_emb = model.encode([query], convert_to_numpy=True)
-    q_emb = q_emb / np.linalg.norm(q_emb, axis=1, keepdims=True)
-    D, I = index.search(q_emb, top_k)
+    """
+    Search the FAISS index for the most similar pre-stored questions.
+    Args:
+        query (str): User query string to encode and search.
+        top_k (int): Number of nearest neighbors to retrieve from FAISS.
+        score_threshold (float): Minimum similarity score (inner product) to accept.
+    Returns:
+        list of dict: Each dict contains:
+            - "question": matched question text (str)
+            - "answer": corresponding answer text (str)
+            - "score": similarity score (float)
+    """
+    # Encode and normalize the query embedding.
+    q_embedding = model.encode([query], convert_to_numpy=True)
+    q_embedding = q_embedding / np.linalg.norm(q_embedding, axis=1, keepdims=True)
+    # Search the FAISS index. distances contains inner-product scores.
+    distances, indices = index.search(q_embedding, top_k)
     results = []
-    for score, idx in zip(D[0], I[0]):
+    for score, idx in zip(distances[0], indices[0]):
+        # FAISS uses -1 for empty slots when fewer than top_k vectors exist.
         if idx == -1:
             continue
+        # Filter out low-similarity results.
         if float(score) < score_threshold:
             continue
         results.append({
@@ -36,31 +60,39 @@ def retrieve_answers(query, top_k=3, score_threshold=0.35):
             "score": float(score)
         })
     return results
-# 4) 主循环
+# 4) Main interactive loop
 def main_loop():
-    print("输入问题（输入 'exit' 或 'quit' 退出）：")
+    """
+    Run a simple command-line loop to accept user questions, retrieve matches,
+    and print the best-matching pre-stored answer.
+    """
+    print("Enter a question (type 'exit' or 'quit' to leave):")
     while True:
         try:
-            user_q = input("\n你的问题: ").strip()
+            user_query = input("\nYour question: ").strip()
         except (KeyboardInterrupt, EOFError):
-            print("\n退出。")
+            print("\nExiting.")
             break
-        if not user_q:
-            print("请先输入问题。")
+        if not user_query:
+            print("Please enter a question first.")
             continue
-        if user_q.lower() in ("exit", "quit"):
-            print("退出。")
+        if user_query.lower() in ("exit", "quit"):
+            print("Exiting.")
             break
-        hits = retrieve_answers(user_q, top_k=3, score_threshold=0.35)
+        # Retrieve candidate matches from the index.
+        hits = retrieve_answers(user_query, top_k=3, score_threshold=0.35)
         if not hits:
-            print("抱歉，未找到匹配的预存答案。")
+            # No candidate passed the similarity threshold.
+            print("Sorry, no matching pre-stored answers found.")
             continue
+        # Use the highest-scoring match.
         best = hits[0]
-        # 使用三引号格式化答案输出
+        # Format the answer string using triple quotes (as in original script).
         answer_text = f'''"""{best["answer"]}"""'''
-        print("\n匹配问题：", best["question"])
-        print("相似度得分：", round(best["score"], 4))
-        print("答案：")
+        # Print matched question, similarity score (rounded), and the answer.
+        print("\nMatched question:", best["question"])
+        print("Similarity score:", round(best["score"], 4))
+        print("Answer:")
         print(answer_text)
 if __name__ == "__main__":
     main_loop()
