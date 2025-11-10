@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
 from flask import Flask, render_template_string, request, jsonify
 import re
 from transformers import pipeline
@@ -25,47 +22,79 @@ HTML = """
   <title>双向翻译聊天室</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body, html { height: 100%; }
-    .chat-container { max-width: 900px; margin: 24px auto; height: calc(100vh - 48px); display: flex; flex-direction: column; }
-    .chat-box { flex: 1 1 auto; overflow-y: auto; background: #f8fafc; border-radius: .75rem; padding: 18px; border: 1px solid #e6eef6; }
-    .msg { max-width: 78%; padding: .65rem .9rem; border-radius: .75rem; margin-bottom: .75rem; box-shadow: 0 1px 2px rgba(16,24,40,0.03); }
-    .msg.me { background: linear-gradient(90deg,#dff6e9,#cfeedd); margin-left: auto; text-align: left; }
+    html, body { height: 100%; background: #eaf7ef; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    .chat-wrapper { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 32px; box-sizing: border-box; }
+    .chat-container {
+      width: 100%;
+      max-width: 1100px;             /* 更宽的中间区域 */
+      background: linear-gradient(180deg,#f7fff8,#eef9ee); /* 护眼柔和渐变 */
+      border-radius: 16px;
+      padding: 28px;
+      box-shadow: 0 10px 30px rgba(14, 30, 20, 0.06);
+      height: calc(100vh - 96px);    /* 更大的可用高度 */
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      box-sizing: border-box;
+    }
+    .chat-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .chat-box {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      background: rgba(255,255,255,0.7);
+      border-radius: 14px;
+      padding: 26px;
+      border: 1.5px solid rgba(34, 197, 94, 0.12); /* 柔和绿色边框 */
+    }
+    .msg { max-width: 90%; padding: .85rem 1.05rem; border-radius: 12px; margin-bottom: 14px; box-shadow: 0 4px 10px rgba(16,24,40,0.04); line-height:1.5; font-size: 1rem; }
+    .msg.me { background: linear-gradient(90deg,#dff6e9,#d0f0df); margin-left: auto; text-align: left; }
     .msg.them { background: #ffffff; margin-right: auto; text-align: left; }
-    .meta { font-size: .78rem; color: #6b7280; margin-top: .25rem; }
-    .status { font-size: .85rem; color:#6b7280; }
-    .placeholder-center { height:100%; display:flex; align-items:center; justify-content:center; color:#9ca3af; }
+    .meta { font-size: .78rem; color: #4b5563; margin-top: .25rem; }
+    .status { font-size: .9rem; color:#374151; }
+    .placeholder-center { height:100%; display:flex; align-items:center; justify-content:center; color:#6b7280; }
+    .controls { display:flex; gap:12px; align-items:flex-end; }
+    textarea#msg { min-height:56px; max-height:180px; resize:vertical; border-radius:10px; padding:12px; border:1px solid rgba(16,24,40,0.06); }
+    .small-muted { font-size: .85rem; color:#475569; }
+    .btn-outline-primary { border-color: rgba(16,24,40,0.06); }
+    @media (max-width: 720px) {
+      .chat-container { padding: 18px; height: calc(100vh - 48px); max-width: 100%; border-radius: 12px; }
+      .msg { max-width: 100%; }
+      .controls { flex-direction: column; align-items:stretch; }
+    }
   </style>
 </head>
 <body>
-  <div class="chat-container shadow-sm">
-    <div class="d-flex align-items-center justify-content-between mb-3">
-      <div>
-        <h5 class="mb-0">双向翻译聊天室</h5>
-        <div class="status" id="modelStatus">模型状态：<span class="badge bg-secondary">正在加载...</span></div>
-      </div>
-      <div>
-        <button id="clearBtn" class="btn btn-sm btn-outline-secondary">清空会话</button>
-      </div>
-    </div>
-
-    <div id="chat" class="chat-box" aria-live="polite" aria-atomic="false">
-      <div class="placeholder-center" id="welcome">
-        <div class="text-center">
-          <h6 class="mb-2">欢迎 — 输入中文或英文开始对话</h6>
-          <div class="text-muted">发送后会自动检测语言并翻译给对方</div>
+  <div class="chat-wrapper">
+    <div class="chat-container shadow-sm">
+      <div class="chat-header">
+        <div>
+          <h5 class="mb-0">双向翻译聊天室</h5>
+          <div class="status" id="modelStatus">模型状态：<span class="badge bg-secondary">正在加载...</span></div>
+        </div>
+        <div>
+          <button id="clearBtn" class="btn btn-sm btn-outline-secondary">清空会话</button>
         </div>
       </div>
-    </div>
 
-    <form id="form" class="mt-3 d-flex gap-2" onsubmit="return false;">
-      <textarea id="msg" class="form-control" rows="2" placeholder="输入中文或英文，按 Enter 发送（Shift+Enter 换行）" aria-label="消息"></textarea>
-      <div class="d-flex flex-column align-items-end">
-        <button id="send" class="btn btn-primary mb-2" type="button">发送</button>
-        <button id="sendAsync" class="btn btn-outline-primary btn-sm" type="button" title="异步发送（允许并发）">并发发送</button>
+      <div id="chat" class="chat-box" aria-live="polite" aria-atomic="false">
+        <div class="placeholder-center" id="welcome">
+          <div class="text-center">
+            <h6 class="mb-2">欢迎 — 输入中文或英文开始对话</h6>
+            <div class="text-muted">发送后会自动检测语言并翻译给对方</div>
+          </div>
+        </div>
       </div>
-    </form>
 
-    <div class="mt-2 text-end text-muted small">首次启动会下载模型，可能需要较长时间。刷新页面可清空会话。</div>
+      <form id="form" class="mt-3 d-flex gap-2" onsubmit="return false;">
+        <textarea id="msg" class="form-control" rows="2" placeholder="输入中文或英文，按 Enter 发送（Shift+Enter 换行）" aria-label="消息"></textarea>
+        <div class="d-flex flex-column align-items-end">
+          <button id="send" class="btn btn-primary mb-2" type="button">发送</button>
+          <button id="sendAsync" class="btn btn-outline-primary btn-sm" type="button" title="异步发送（允许并发）">并发发送</button>
+        </div>
+      </form>
+
+      <div class="mt-2 text-end small-muted">首次启动会下载模型，可能需要较长时间。刷新页面可清空会话。</div>
+    </div>
   </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
@@ -254,6 +283,7 @@ def translate():
     if elapsed > TRANSLATE_TIMEOUT:
         return jsonify({"error":"处理超时"}), 504
     return jsonify({"direction": direction, "translation": translation})
+
 # ---------- 启动 ----------
 if __name__ == "__main__":
     print("启动 Flask 应用（访问 http://127.0.0.1:5000 ）")
