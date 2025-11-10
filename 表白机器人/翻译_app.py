@@ -295,3 +295,58 @@ def translate():
 if __name__ == "__main__":
     print("启动 Flask 应用（访问 http://127.0.0.1:5000 ）")
     app.run(host="0.0.0.0", port=5000, debug=False)
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+#!/usr/bin/env python3
+# coding: utf-8
+import re
+from transformers import pipeline
+MODEL_ZH_TO_EN = "Helsinki-NLP/opus-mt-zh-en"
+MODEL_EN_TO_ZH = "Helsinki-NLP/opus-mt-en-zh"
+print("正在创建 translation pipelines，可能需要一些时间，请稍候...")
+pipe_zh_en = pipeline("translation", model=MODEL_ZH_TO_EN)
+pipe_en_zh = pipeline("translation", model=MODEL_EN_TO_ZH)
+print("pipelines 已就绪。")
+def detect_direction(text: str) -> str:
+    zh = len(re.findall(r"[\u4e00-\u9fff]", text))
+    en = len(re.findall(r"[A-Za-z]", text))
+    total = len(text) or 1
+    if zh / total >= 0.4:
+        return "zh->en"
+    if en / total >= 0.4:
+        return "en->zh"
+    return "zh->en"
+def translate_with_pipeline(text: str, direction: str) -> str:
+    if direction == "zh->en":
+        out = pipe_zh_en(text, max_length=512)
+    else:
+        out = pipe_en_zh(text, max_length=512)
+    # pipeline 返回列表，每项包含 'translation_text'
+    return out[0]["translation_text"]
+def main():
+    try:
+        while True:
+            user_input = input("输入（空行退出）: ").strip()
+            if not user_input:
+                print("已退出。")
+                break
+            direction = detect_direction(user_input)
+            translated = translate_with_pipeline(user_input, direction)
+            print(f"方向: {direction}，翻译: {translated}\n")
+    except KeyboardInterrupt:
+        print("\n已退出（KeyboardInterrupt）。")
+if __name__ == "__main__":
+    main()
+"""
