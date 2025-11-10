@@ -22,16 +22,16 @@ HTML = """
   <title>双向翻译聊天室</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    html, body { height: 100%; background: #eaf7ef; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
-    .chat-wrapper { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 32px; box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background: #eaf7ef; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    .chat-wrapper { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 18px; box-sizing: border-box; }
     .chat-container {
       width: 100%;
-      max-width: 1100px;             /* 更宽的中间区域 */
+      max-width: 1400px;             /* 更宽的中间区域 */
       background: linear-gradient(180deg,#f7fff8,#eef9ee); /* 护眼柔和渐变 */
-      border-radius: 16px;
-      padding: 28px;
+      border-radius: 12px;
+      padding: 32px;
       box-shadow: 0 10px 30px rgba(14, 30, 20, 0.06);
-      height: calc(100vh - 96px);    /* 更大的可用高度 */
+      height: calc(100vh - 36px);    /* 更大的可用高度 */
       display: flex;
       flex-direction: column;
       gap: 18px;
@@ -41,25 +41,32 @@ HTML = """
     .chat-box {
       flex: 1 1 auto;
       overflow-y: auto;
-      background: rgba(255,255,255,0.7);
+      background: rgba(255,255,255,0.88);
       border-radius: 14px;
-      padding: 26px;
-      border: 1.5px solid rgba(34, 197, 94, 0.12); /* 柔和绿色边框 */
+      padding: 32px;
+      border: 1.5px solid rgba(34, 197, 94, 0.08); /* 柔和绿色边框 */
     }
-    .msg { max-width: 90%; padding: .85rem 1.05rem; border-radius: 12px; margin-bottom: 14px; box-shadow: 0 4px 10px rgba(16,24,40,0.04); line-height:1.5; font-size: 1rem; }
-    .msg.me { background: linear-gradient(90deg,#dff6e9,#d0f0df); margin-left: auto; text-align: left; }
+    .msg { max-width: 95%; padding: 1rem 1.15rem; border-radius: 14px; margin-bottom: 16px; box-shadow: 0 6px 18px rgba(16,24,40,0.04); line-height:1.6; font-size: 1rem; }
+    .msg.me { background: linear-gradient(90deg,#e6fbef,#d9f4e6); margin-left: auto; text-align: left; }
     .msg.them { background: #ffffff; margin-right: auto; text-align: left; }
     .meta { font-size: .78rem; color: #4b5563; margin-top: .25rem; }
-    .status { font-size: .9rem; color:#374151; }
+    .status { font-size: .95rem; color:#374151; }
     .placeholder-center { height:100%; display:flex; align-items:center; justify-content:center; color:#6b7280; }
     .controls { display:flex; gap:12px; align-items:flex-end; }
-    textarea#msg { min-height:56px; max-height:180px; resize:vertical; border-radius:10px; padding:12px; border:1px solid rgba(16,24,40,0.06); }
-    .small-muted { font-size: .85rem; color:#475569; }
+    textarea#msg { min-height:72px; max-height:260px; resize:vertical; border-radius:10px; padding:14px; border:1px solid rgba(16,24,40,0.06); }
+    .small-muted { font-size: .9rem; color:#475569; }
     .btn-outline-primary { border-color: rgba(16,24,40,0.06); }
+    @media (min-width:1200px) {
+      .chat-container { padding-left: 6vw; padding-right: 6vw; } /* 超宽屏保留适度边距 */
+      .chat-box { padding: 40px; }
+      .msg { max-width: 88%; font-size: 1.05rem; }
+    }
     @media (max-width: 720px) {
-      .chat-container { padding: 18px; height: calc(100vh - 48px); max-width: 100%; border-radius: 12px; }
+      .chat-container { padding: 14px; height: calc(100vh - 24px); max-width: 100%; border-radius: 10px; }
+      .chat-box { padding: 18px; }
       .msg { max-width: 100%; }
       .controls { flex-direction: column; align-items:stretch; }
+      textarea#msg { min-height:56px; max-height:160px; }
     }
   </style>
 </head>
