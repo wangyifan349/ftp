@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """ShamirGaussShare 是一个纯 Python 实现的 Shamir 秘密分享工具。它在有限域 GF(p) 上生成 n 个份额（shares），任意 k 个份额可通过高斯消元重建出原始秘密（多项式常数项）。"""
+"""
+ShamirGaussShare 基于的核心想法来自 Adi Shamir 在 1979 年发表的论文 "How to Share a Secret"（作者：Adi Shamir，发表于 Communications of the ACM, 1979, Vol.22, No.11, pp.612–613）。该论文提出了现在称为 Shamir 秘密分享（Shamir's Secret Sharing, SSS）的方案：把秘密视为一个有限域上多项式的常数项，随机选择一个次数为 k−1 的多项式并在不同非零 x 值处计算多项式值作为份额；
+任何 k 个不同 x 的份额通过插值（论文原始表述使用拉格朗日插值）可以唯一确定该次数为 k−1 的多项式，从而恢复常数项（秘密），而少于 k 个份额则无法获得任何关于秘密的有用信息（信息理论安全）。
+论文简短但奠定了门限秘密分享的数学基础，并展示了基于多项式插值的简单、效率较高且信息上安全的构造。
+"""
+
 from typing import List, Tuple
 import secrets
 # ---- number theory ----
