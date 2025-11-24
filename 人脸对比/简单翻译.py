@@ -7,43 +7,46 @@ from transformers import MarianMTModel, MarianTokenizer
 from langdetect import detect
 import torch
 # ------------------- 加载模型 -------------------
-zh_en = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-zh-en")
-zh_en_tok = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-zh-en")
-en_zh = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-en-zh")
-en_zh_tok = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-en-zh")
+zhEnModel = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-zh-en")
+zhEnTokenizer = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-zh-en")
+enZhModel = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-en-zh")
+enZhTokenizer = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-en-zh")
 if torch.cuda.is_available():
-    zh_en.to("cuda"); en_zh.to("cuda")
+    zhEnModel.to("cuda")
+    enZhModel.to("cuda")
 # ------------------- 语言检测 -------------------
-def detect_lang(txt: str) -> str:
+def detectLanguage(text: str) -> str:
     try:
-        return "zh" if detect(txt).startswith("zh") else "en"
+        return "zh" if detect(text).startswith("zh") else "en"
     except:
         return "zh"
 # ------------------- 翻译函数 -------------------
-def translate(txt: str) -> str:
-    src = detect_lang(txt)
-    if src == "zh":      # 中文→英文
-        tok, model = zh_en_tok, zh_en
-    else:                # 英文→中文
-        tok, model = en_zh_tok, en_zh
-    enc = tok.prepare_seq2seq_batch(src_texts=[txt], return_tensors="pt")
+def translate(text: str) -> str:
+    sourceLang = detectLanguage(text)
+    if sourceLang == "zh":      # 中文→英文
+        tokenizer, model = zhEnTokenizer, zhEnModel
+    else:                       # 英文→中文
+        tokenizer, model = enZhTokenizer, enZhModel
+    encoded = tokenizer.prepare_seq2seq_batch(src_texts=[text], return_tensors="pt")
     if torch.cuda.is_available():
-        enc = {k: v.to("cuda") for k, v in enc.items()}
+        encoded = {k: v.to("cuda") for k, v in encoded.items()}
     with torch.no_grad():
-        out = model.generate(**enc, max_length=256)
-    return tok.batch_decode(out, skip_special_tokens=True)[0]
+        generated = model.generate(**encoded, max_length=256)
+    return tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
 # ------------------- 交互循环 -------------------
 def main():
     print("中英互译助手（输入 exit 退出）")
     while True:
         try:
-            s = input(">>> ").strip()
-            if not s: continue
-            if s.lower() == "exit": break
-            print("翻译结果:", translate(s))
+            userInput = input(">>> ").strip()
+            if not userInput:
+                continue
+            if userInput.lower() == "exit":
+                break
+            print("翻译结果:", translate(userInput))
         except KeyboardInterrupt:
             break
-        except Exception as e:
-            print("错误:", e)
+        except Exception as err:
+            print("错误:", err)
 if __name__ == "__main__":
     main()
