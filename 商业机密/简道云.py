@@ -1,4 +1,3 @@
-# app.py
 import os
 import shutil
 from pathlib import Path
@@ -6,31 +5,38 @@ from urllib.parse import quote, unquote
 from flask import Flask, request, send_file, jsonify, render_template_string, abort
 from werkzeug.security import check_password_hash, generate_password_hash
 from flask_httpauth import HTTPBasicAuth
+
 app = Flask(__name__)
 auth = HTTPBasicAuth()
+
 BASE_DIRECTORY = Path(__file__).parent.resolve()
 STORAGE_ROOT = BASE_DIRECTORY / "storage"
 STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # 1GB
-# Simple in-memory user store (username -> password_hash)
+
 USER_DATABASE = {
     "admin": generate_password_hash("password123"),
     "user": generate_password_hash("userpass")
 }
+
 @auth.verify_password
 def verify_password(username, password):
     if username in USER_DATABASE and check_password_hash(USER_DATABASE.get(username), password):
         return username
     return None
+
 def get_safe_path(relative_path: str) -> Path:
     relative_text = (relative_path or "").strip()
     relative_text = unquote(relative_text)
     if os.path.isabs(relative_text):
         raise ValueError("Absolute paths not allowed")
     candidate = (STORAGE_ROOT / relative_text).resolve()
-    if not str(candidate).startswith(str(STORAGE_ROOT.resolve())):
+    storage_resolved = STORAGE_ROOT.resolve()
+    if not str(candidate).startswith(str(storage_resolved) + os.sep) and str(candidate) != str(storage_resolved):
         raise ValueError("Illegal path")
     return candidate
+
 INDEX_TEMPLATE = """
 <!doctype html>
 <html lang="en">
@@ -108,7 +114,7 @@ function fetchList(){
       data.files.forEach(file=>{
         const div = document.createElement('div'); div.className='list-group-item d-flex item-row';
         const left = document.createElement('div'); left.className='d-flex gap-2 align-items-center flex-grow-1';
-        left.innerHTML = '<span class="fs-5">📄</span><div><div>'+file.name+'</div><small class="text-muted">'+file.size_text+'</small></div>';
+        left.innerHTML = '<span class="fs-5">📄</span><div><div>'+file.name+'</div></div>';
         const right = document.createElement('div');
         const filePath = encodeURIComponent(file.path);
         right.innerHTML = '<a class="btn btn-sm btn-outline-success me-1" href="/api/download?path='+filePath+'">Download</a>' +
@@ -193,10 +199,12 @@ fetchList();
 </body>
 </html>
 """
+
 @app.route('/')
 @auth.login_required
 def index():
     return render_template_string(INDEX_TEMPLATE, username=auth.current_user())
+
 @app.route('/api/list')
 @auth.login_required
 def api_list():
@@ -213,13 +221,12 @@ def api_list():
             if child.is_dir():
                 folder_list.append(quote(child.name))
             else:
-                size_bytes = child.stat().st_size
-                human_readable = format_size(size_bytes)
                 relative_child = os.path.relpath(str(child), str(STORAGE_ROOT))
-                file_list.append({'name': child.name, 'size': size_bytes, 'size_text': human_readable, 'path': quote(relative_child)})
+                file_list.append({'name': child.name, 'path': quote(relative_child)})
         return jsonify({'folders': folder_list, 'files': file_list})
     except Exception as exception:
         return jsonify({'err': str(exception), 'folders': [], 'files': []})
+
 @app.route('/api/upload', methods=['POST'])
 @auth.login_required
 def api_upload():
@@ -235,11 +242,14 @@ def api_upload():
             return jsonify({'err': 'No files uploaded'})
         for upload_file in upload_files:
             filename = upload_file.filename or 'unnamed'
+            # Use only filename portion to avoid path traversal from client
+            filename = Path(filename).name
             destination = target_directory / filename
             upload_file.save(str(destination))
         return jsonify({'ok': True})
     except Exception as exception:
         return jsonify({'err': str(exception)})
+
 @app.route('/api/download')
 @auth.login_required
 def api_download():
@@ -248,16 +258,21 @@ def api_download():
         file_path = get_safe_path(relative_path)
         if not file_path.exists() or not file_path.is_file():
             return abort(404)
-        return send_file(str(file_path), as_attachment=True, download_name=file_path.name)
+        # download_name supported in modern Flask; fallback handled by keyword name if needed by environment
+        try:
+            return send_file(str(file_path), as_attachment=True, download_name=file_path.name)
+        except TypeError:
+            # older Flask: attachment_filename
+            return send_file(str(file_path), as_attachment=True, attachment_filename=file_path.name)
     except Exception:
         return abort(400)
+
 @app.route('/api/delete', methods=['POST'])
 @auth.login_required
 def api_delete():
     try:
         request_data = request.get_json() or {}
         relative_path = request_data.get('path', '')
-        target_is_folder = bool(request_data.get('is_folder'))
         target_path = get_safe_path(relative_path)
         if not target_path.exists():
             return jsonify({'err': 'Path not found'})
@@ -268,6 +283,7 @@ def api_delete():
         return jsonify({'ok': True})
     except Exception as exception:
         return jsonify({'err': str(exception)})
+
 @app.route('/api/mkdir', methods=['POST'])
 @auth.login_required
 def api_make_directory():
@@ -287,6 +303,7 @@ def api_make_directory():
         return jsonify({'ok': True})
     except Exception as exception:
         return jsonify({'err': str(exception)})
+
 @app.route('/api/move', methods=['POST'])
 @auth.login_required
 def api_move_item():
@@ -298,6 +315,10 @@ def api_move_item():
             return jsonify({'err': 'Source and destination required'})
         source_path = get_safe_path(source_relative)
         destination_path = get_safe_path(destination_relative)
+
+        if not source_path.exists():
+            return jsonify({'err': 'Source not found'})
+
         if destination_path.exists() and destination_path.is_dir():
             final_destination = destination_path / source_path.name
         else:
@@ -305,20 +326,24 @@ def api_move_item():
             if not final_parent.exists():
                 final_parent.mkdir(parents=True, exist_ok=True)
             final_destination = destination_path
-        if str(final_destination).startswith(str(source_path.resolve()) + os.sep):
-            return jsonify({'err': 'Cannot move into its own subdirectory'})
+
+        # Prevent moving into own subdirectory
+        try:
+            # Python 3.9+: use is_relative_to
+            if final_destination.resolve().is_relative_to(source_path.resolve()):
+                return jsonify({'err': 'Cannot move into its own subdirectory'})
+        except Exception:
+            # Fallback for older Python: compare via relative_to
+            try:
+                final_destination.resolve().relative_to(source_path.resolve())
+                return jsonify({'err': 'Cannot move into its own subdirectory'})
+            except Exception:
+                pass
+
         shutil.move(str(source_path), str(final_destination))
         return jsonify({'ok': True})
     except Exception as exception:
         return jsonify({'err': str(exception)})
 
-def format_size(size_bytes: int) -> str:
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    for unit in ['KB', 'MB', 'GB', 'TB']:
-        size_bytes /= 1024.0
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-    return f"{size_bytes:.1f} PB"
 if __name__ == '__main__':
     app.run(debug=True)
