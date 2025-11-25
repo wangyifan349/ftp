@@ -45,7 +45,36 @@ qa_pairs = {
 - 非药物干预：餐后短时中等强度运动（如餐后 10–30 分钟步行）可显著降低血糖峰值并改善胰岛素敏感性；进餐顺序（先吃蛋白/蔬菜再吃碳水）和分餐（少量多餐）也能降低餐后峰值。
 - 监测与个体化：使用连续血糖监测（CGM）或频繁血糖检测分析餐后血糖曲线，依据数据进行饮食与药物微调，注意避免低血糖。目标设定应平衡 HbA1c、空腹与餐后血糖目标并兼顾患者安全与生活质量。
 - 综合管理：并发症评估、体重管理、血压与血脂控制以及与营养师或内分泌科协作，采用多学科方法以长期降低心血管与微血管并发症风险。''',
+"人脸对比代码示例":"""
+import face_recognition
+import numpy as np
+img1_path = "known.jpg"     # 参考图片
+img2_path = "candidate.jpg" # 待比对图片
+# 加载并编码（只取第一张人脸）
+img1 = face_recognition.load_image_file(img1_path)
+encs1 = face_recognition.face_encodings(img1)
+if not encs1:
+    raise SystemExit(f"No face found in {img1_path}")
+enc1 = encs1[0]
+img2 = face_recognition.load_image_file(img2_path)
+encs2 = face_recognition.face_encodings(img2)
+if not encs2:
+    raise SystemExit(f"No face found in {img2_path}")
+enc2 = encs2[0]
+# 计算欧氏距离并判断是否匹配
+dist = np.linalg.norm(enc1 - enc2)
+threshold = 0.6  # 可根据需要调整
+is_same = dist <= threshold
+print(f"Distance: {dist:.4f}")
+print('Match: Yes' if is_same else 'Match: No')
+"""，
 
+
+
+
+
+
+    
     "比特币是安全优先的去中心化货币与基础设施": '''
 比特币是一种去中心化的点对点数字货币，旨在提供无需信任的价值转移与抗审查的支付手段。它通过公开区块链记录所有交易，任何人都可以验证账本状态而无需中央机构。比特币的设计优先考虑安全性与抗篡改性：采用工作量证明（PoW）共识、最长链规则和经济激励使得篡改历史需要付出巨大的算力成本，从而保护网络对抗双重支付和大规模攻击。其去中心化属性来源于矿工、节点和钱包用户的分散参与，任何单一实体难以独占控制。
 在技术实现上，比特币采用UTXO（未花费交易输出）模型来跟踪资金所有权，交易由输入消费以前的输出并生成新输出，便于并行验证和隐私策略。比特币脚本为非图灵完备的堆栈式语言，限制了链上逻辑以降低漏洞与攻击面，但仍支持多重签名、时间锁（nLockTime、CSV）和简单条件支付等实用功能。区块结构、交易费市场与广播机制共同决定确认时间与费用波动；随着链上容量有限，二层扩展（如闪电网络）用于实现高速低费小额支付，而链上交易多用于最终结算。
