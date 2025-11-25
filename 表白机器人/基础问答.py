@@ -67,7 +67,7 @@ threshold = 0.6  # 可根据需要调整
 is_same = dist <= threshold
 print(f"Distance: {dist:.4f}")
 print('Match: Yes' if is_same else 'Match: No')
-"""，
+""",
 
 
 
@@ -127,4 +127,4 @@ def interactive_loop():
         sys.exit(0)
 
     
-    interactive_loop()
+interactive_loop()
