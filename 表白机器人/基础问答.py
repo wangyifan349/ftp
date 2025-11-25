@@ -1,3 +1,6 @@
+"""
+pip install sentence-transformers faiss-cpu numpy
+"""
 import sys
 import numpy as np
 import faiss
