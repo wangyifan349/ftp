@@ -1,15 +1,20 @@
 """
-这个脚本实现了一个本地的代码片段笔记管理工具，使用 SQLite 存储每条记录的代码、备注和标签。
-它提供增、删、改、查四大基本操作，并通过交互式菜单让用户可以方便地添加新条目、删除指定 id 的记录、修改已有字段以及按备注或标签进行模糊搜索。
-查询备注时，程序会先匹配包含关键字的记录，然后计算关键字与每条备注之间的最长公共子序列长度，并按该长度的降序返回，以便把最相关的结果排在前面。
-所有数据保存在同目录下的 `code_notes.db` 文件中，程序启动时会自动创建所需表结构。
+1. 这段程序是一个本地的代码片段笔记管理工具，使用 SQLite 存储每条记录的代码、备注和标签；  
+2. 它提供新增、删除、修改和查询四大基本操作，并通过交互式菜单让用户可以直观地完成这些任务；  
+3. 查询备注时采用最长公共子序列（LCS）算法，对用户输入的关键字与备注之间的公共部分进行长度计算，并按该长度降序返回结果，从而在关键字中夹杂噪声时仍能准确匹配有效信息。
 """
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import sqlite3
 from pathlib import Path
-from typing import List, Optional, Any
+from typing import List, Optional
 
 DB_PATH = Path("code_notes.db")
 
+# -------------------------------------------------
+# Database helpers
+# -------------------------------------------------
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -29,7 +34,9 @@ def init_db() -> None:
         )
         conn.commit()
 
-# ---------- CRUD ----------
+# -------------------------------------------------
+# CRUD operations
+# -------------------------------------------------
 def add_entry(code: str, note: str = "", tags: List[str] = None) -> int:
     tags_str = ",".join(tags) if tags else ""
     with get_connection() as conn:
@@ -52,7 +59,8 @@ def update_entry(
     note: Optional[str] = None,
     tags: Optional[List[str]] = None,
 ) -> bool:
-    fields, values = [], []
+    fields = []
+    values = []
     if code is not None:
         fields.append("code = ?")
         values.append(code)
@@ -71,58 +79,52 @@ def update_entry(
         conn.commit()
         return cur.rowcount > 0
 
-# ---------- 辅助 ----------
-def _lcs_length(a: str, b: str) -> int:
-    """
-    计算两个字符串的最长公共子序列（LCS）长度。
-    使用动态规划，时间 O(len(a) * len(b))，空间 O(min(len(a), len(b))).
-    """
-    # 只保留较短的字符串作为列，以节省空间
+# -------------------------------------------------
+# LCS utility (dynamic programming, space‑optimized)
+# -------------------------------------------------
+def lcs_length(a: str, b: str) -> int:
+    """Return length of longest common subsequence of a and b."""
     if len(a) < len(b):
-        a, b = b, a
+        a, b = b, a                     # make a the longer string
     prev = [0] * (len(b) + 1)
     cur = [0] * (len(b) + 1)
 
     for i in range(1, len(a) + 1):
-        # 逐列更新当前行
         for j in range(1, len(b) + 1):
             if a[i - 1] == b[j - 1]:
                 cur[j] = prev[j - 1] + 1
             else:
-                # 取左上、上、左三个位置的最大值
                 left = cur[j - 1]
                 up = prev[j]
                 cur[j] = left if left > up else up
-        # 交换引用，准备下一轮
         prev, cur = cur, prev
     return prev[-1]
 
+# -------------------------------------------------
+# Query functions
+# -------------------------------------------------
 def query_by_note(keyword: str) -> List[sqlite3.Row]:
     """
-    按备注关键字模糊搜索，并根据与关键字的 LCS 长度降序返回结果。
+    Return rows whose note shares a non‑zero LCS with keyword,
+    sorted by LCS length descending.
     """
-    pattern = f"%{keyword}%"
     with get_connection() as conn:
-        # 先取出所有匹配的记录
-        cur = conn.execute("SELECT * FROM entries WHERE note LIKE ?;", (pattern,))
-        rows = cur.fetchall()
+        cur = conn.execute("SELECT * FROM entries;")
+        all_rows = cur.fetchall()
 
-    # 为每条记录计算 LCS 长度并保存到临时列表
     rows_with_score = []
-    for r in rows:
-        note_text = r["note"] if r["note"] else ""
-        score = _lcs_length(keyword, note_text)
-        rows_with_score.append((score, r))
+    for row in all_rows:
+        note_text = row["note"] if row["note"] else ""
+        score = lcs_length(keyword, note_text)
+        if score > 0:
+            rows_with_score.append((score, row))
 
-    # 按 LCS 长度降序排序（相同长度保持原查询顺序）
     rows_with_score.sort(key=lambda x: x[0], reverse=True)
 
-    # 只返回 Row 对象的列表
-    sorted_rows = []
+    result = []
     for _, row in rows_with_score:
-        sorted_rows.append(row)
-
-    return sorted_rows
+        result.append(row)
+    return result
 
 def query_by_tag(tag: str) -> List[sqlite3.Row]:
     pattern = f"%{tag}%"
@@ -135,7 +137,9 @@ def get_all() -> List[sqlite3.Row]:
         cur = conn.execute("SELECT * FROM entries;")
         return cur.fetchall()
 
-# ---------- 打印 & 输入 ----------
+# -------------------------------------------------
+# Display / input helpers
+# -------------------------------------------------
 def print_rows(rows: List[sqlite3.Row]) -> None:
     if not rows:
         print("未找到匹配记录。")
@@ -153,7 +157,20 @@ def input_tags() -> List[str]:
     raw = input("输入标签（多个标签请用逗号分隔）: ").strip()
     return [t.strip() for t in raw.split(",")] if raw else []
 
-# ---------- 主菜单 ----------
+def read_multiline(prompt: str = "代码片段 (结束请单独输入 EOF): ") -> str:
+    """Read multiple lines until a line containing only EOF is entered."""
+    print(prompt)
+    lines = []
+    while True:
+        line = input()
+        if line.strip() == "EOF":
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+# -------------------------------------------------
+# Main menu
+# -------------------------------------------------
 def main_menu() -> None:
     menu = """
 请选择操作:
@@ -168,7 +185,7 @@ def main_menu() -> None:
     while True:
         choice = input(menu).strip()
         if choice == "1":
-            code = input("代码片段: ").strip()
+            code = read_multiline()
             note = input("备注信息: ").strip()
             tags = input_tags()
             new_id = add_entry(code, note, tags)
